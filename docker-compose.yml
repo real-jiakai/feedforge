@@ -1,0 +1,22 @@
+services:
+  feedforge:
+    build: .
+    image: feedforge:latest
+    container_name: feedforge
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      # Protect feed creation/editing with a token (recommended when the
+      # server is reachable from the internet). Feed URLs stay public.
+      - FEEDFORGE_TOKEN=${FEEDFORGE_TOKEN:-}
+      # Public origin behind a reverse proxy, e.g. https://feeds.example.com.
+      # Set this in production so generated feed URLs don't depend on the
+      # Host header of whoever asked first.
+      - FEEDFORGE_BASE_URL=${FEEDFORGE_BASE_URL:-}
+      # Set to "true" only if you need to scrape hosts on your own LAN.
+      - FEEDFORGE_ALLOW_PRIVATE=${FEEDFORGE_ALLOW_PRIVATE:-false}
+      # Max size of a fetched source page, in MB.
+      - FEEDFORGE_MAX_FETCH_MB=${FEEDFORGE_MAX_FETCH_MB:-5}

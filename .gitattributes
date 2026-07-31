@@ -1,0 +1,15 @@
+# Keep LF in the working tree on every platform. A CRLF checkout of
+# docker-entrypoint.sh makes the container fail to start with
+# "bad interpreter: /bin/sh^M", and Go tooling expects LF too.
+* text=auto eol=lf
+
+*.sh      text eol=lf
+Dockerfile text eol=lf
+*.go      text eol=lf
+*.mod     text eol=lf
+*.sum     text eol=lf
+*.yml     text eol=lf
+*.html    text eol=lf
+*.css     text eol=lf
+*.js      text eol=lf
+*.md      text eol=lf

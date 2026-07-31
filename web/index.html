@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FeedForge</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="%23f26522"/><circle cx="7" cy="17" r="2.2" fill="white"/><path d="M5 10.5a8.5 8.5 0 0 1 8.5 8.5h-3A5.5 5.5 0 0 0 5 13.5z" fill="white"/><path d="M5 4.5A14.5 14.5 0 0 1 19.5 19h-3A11.5 11.5 0 0 0 5 7.5z" fill="white"/></svg>'>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="#/">
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><rect width="24" height="24" rx="5" fill="#f26522"/><circle cx="7" cy="17" r="2.2" fill="#fff"/><path d="M5 10.5a8.5 8.5 0 0 1 8.5 8.5h-3A5.5 5.5 0 0 0 5 13.5z" fill="#fff"/><path d="M5 4.5A14.5 14.5 0 0 1 19.5 19h-3A11.5 11.5 0 0 0 5 7.5z" fill="#fff"/></svg>
+    <span>FeedForge</span>
+  </a>
+  <span class="tagline" data-i18n="tagline">Turn any web page into an RSS feed</span>
+  <div class="spacer"></div>
+  <button id="tokenBtn" class="btn ghost" hidden>🔑 <span data-i18n="apiToken">API token</span></button>
+  <button id="langBtn" class="btn ghost" aria-label="Switch language">中文</button>
+</header>
+
+<main id="app">
+
+  <!-- ===================== Feed list ===================== -->
+  <section id="view-list" hidden>
+    <div class="list-head">
+      <h1 data-i18n="yourFeeds">Your feeds</h1>
+      <a class="btn primary" href="#/new" data-i18n="newFeed">+ New feed</a>
+    </div>
+    <div id="feedCards" class="cards"></div>
+    <div id="emptyState" class="empty" hidden>
+      <p class="empty-icon">📡</p>
+      <h2 data-i18n="emptyTitle">No feeds yet</h2>
+      <p data-i18n="emptyHint">Create your first feed from any web page — or practice on the built-in demo page.</p>
+      <div class="empty-actions">
+        <a class="btn primary" href="#/new" data-i18n="newFeed">+ New feed</a>
+      </div>
+    </div>
+
+    <div class="recipes">
+      <h2 data-i18n="recipesTitle">Start from a recipe</h2>
+      <p class="hint" data-i18n="recipesHint">Ready-made patterns for sites that have no feed of their own. Each one fills in the whole wizard, so you can see exactly how it works — and change it.</p>
+      <div id="recipeCards" class="cards"></div>
+    </div>
+  </section>
+
+  <!-- ===================== Editor ===================== -->
+  <section id="view-editor" hidden>
+    <div class="list-head">
+      <h1 id="editorTitle" data-i18n="newFeedTitle">New feed</h1>
+      <a class="btn ghost" href="#/" data-i18n="backToList">← All feeds</a>
+    </div>
+
+    <div id="savedPanel" class="saved-panel" hidden>
+      <h2>✅ <span data-i18n="feedReady">Your feed is ready</span></h2>
+      <div class="feed-url-row">
+        <code id="savedRssUrl"></code>
+        <button class="btn small" data-copy="#savedRssUrl" data-i18n="copy">Copy</button>
+        <a id="savedRssOpen" class="btn small ghost" target="_blank" rel="noopener" data-i18n="open">Open</a>
+      </div>
+      <div class="feed-url-row">
+        <code id="savedJsonUrl"></code>
+        <button class="btn small" data-copy="#savedJsonUrl" data-i18n="copy">Copy</button>
+      </div>
+    </div>
+
+    <!-- Step 1 -->
+    <div class="step">
+      <div class="step-head"><span class="step-no">1</span><h2 data-i18n="step1">Source page</h2></div>
+      <p class="hint" data-i18n="step1Hint">Enter the address of the page you want to turn into a feed, then load it to see its HTML source.</p>
+      <div class="row">
+        <input id="f-sourceUrl" type="url" placeholder="https://example.com/news" class="grow">
+        <select id="f-encoding">
+          <option value="" data-i18n="encAuto">Encoding: auto</option>
+          <option value="utf-8">UTF-8</option>
+          <option value="gbk">GBK</option>
+          <option value="gb18030">GB18030</option>
+          <option value="big5">Big5</option>
+          <option value="shift_jis">Shift_JIS</option>
+          <option value="euc-jp">EUC-JP</option>
+          <option value="euc-kr">EUC-KR</option>
+          <option value="iso-8859-1">ISO-8859-1</option>
+          <option value="windows-1251">Windows-1251</option>
+          <option value="windows-1252">Windows-1252</option>
+        </select>
+        <button id="loadBtn" class="btn primary" data-i18n="loadPage">Load page</button>
+      </div>
+      <div id="fetchError" class="error-box" hidden></div>
+      <div id="pagePanel" class="panel" hidden>
+        <div class="panel-head">
+          <span id="pageInfo"></span>
+          <button id="reloadBtn" class="btn small ghost" data-i18n="reload">↻ Reload</button>
+        </div>
+        <pre id="pageSource" class="mono"></pre>
+      </div>
+    </div>
+
+    <!-- Step 2 -->
+    <div class="step">
+      <div class="step-head"><span class="step-no">2</span><h2 data-i18n="step2">Extraction rules</h2></div>
+      <p class="hint" data-i18n="step2Hint">Use {%} to capture text and {*} to skip it. The optional global pattern narrows the search area; the item pattern is applied repeatedly to find every item.</p>
+      <label data-i18n="globalPattern">Global search pattern (optional)</label>
+      <textarea id="f-globalPattern" class="mono" rows="2" spellcheck="false" placeholder='<ul class="articles">{%}</ul>'></textarea>
+      <div id="globalResult" class="result" hidden></div>
+      <label data-i18n="itemPattern">Item search pattern</label>
+      <textarea id="f-itemPattern" class="mono" rows="4" spellcheck="false" placeholder='<li><a href="{%}">{%}</a></li>'></textarea>
+      <label class="check"><input id="f-smartWhitespace" type="checkbox" checked> <span data-i18n="smartWs">Smart whitespace (a space in the pattern matches any run of spaces, tabs or newlines)</span></label>
+      <div id="itemError" class="error-box" hidden></div>
+      <div id="itemsResult" class="panel" hidden>
+        <div class="panel-head"><span id="itemsInfo"></span></div>
+        <div class="table-wrap"><table id="itemsTable" class="mono"></table></div>
+      </div>
+    </div>
+
+    <!-- Step 3 -->
+    <div class="step">
+      <div class="step-head"><span class="step-no">3</span><h2 data-i18n="step3">Output format</h2></div>
+      <p class="hint" data-i18n="step3Hint">Build the feed from your captures: {%1} is the first capture of each item, {%2} the second, and so on. Feed properties may use captures from the global pattern.</p>
+      <div class="grid2">
+        <div>
+          <h3 data-i18n="feedProps">Feed properties</h3>
+          <label data-i18n="feedTitle">Feed title</label>
+          <input id="f-title" type="text" placeholder="My News Feed">
+          <label data-i18n="feedLink">Feed link</label>
+          <input id="f-link" type="text" placeholder="https://example.com/news">
+          <label data-i18n="feedDesc">Feed description</label>
+          <input id="f-description" type="text">
+        </div>
+        <div>
+          <h3 data-i18n="itemProps">Item templates</h3>
+          <label data-i18n="itemTitleT">Item title</label>
+          <input id="f-itemTitle" class="mono" type="text" placeholder="{%2}">
+          <label data-i18n="itemLinkT">Item link</label>
+          <input id="f-itemLink" class="mono" type="text" placeholder="{%1}">
+          <label data-i18n="itemContentT">Item content (HTML allowed)</label>
+          <textarea id="f-itemContent" class="mono" rows="3" spellcheck="false" placeholder="{%3}"></textarea>
+        </div>
+      </div>
+      <div class="row opts">
+        <label data-i18n="maxItems">Max items</label>
+        <input id="f-maxItems" type="number" min="1" max="100" value="25">
+        <label data-i18n="ttl">Refresh every (min)</label>
+        <input id="f-ttlMinutes" type="number" min="1" max="1440" value="30">
+        <label class="check"><input id="f-reverse" type="checkbox"> <span data-i18n="reverse">Reverse item order</span></label>
+      </div>
+      <div id="feedPreviewPanel" class="panel" hidden>
+        <div class="panel-head"><span data-i18n="preview">Feed preview</span></div>
+        <div id="feedPreview"></div>
+      </div>
+    </div>
+
+    <div class="save-bar">
+      <button id="saveBtn" class="btn primary big" data-i18n="save">Save feed</button>
+      <span id="saveStatus"></span>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <span>FeedForge — <span data-i18n="footNote">a self-hosted, open-source successor to Feed43</span></span>
+  <span>·</span>
+  <a href="/demo" target="_blank" rel="noopener" data-i18n="demoLink">Demo page</a>
+  <span>·</span>
+  <a href="https://github.com/real-jiakai/feedforge" target="_blank" rel="noopener">GitHub</a>
+</footer>
+
+<div id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
