@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/real-jiakai/feedforge/internal/fetch"
@@ -72,7 +73,10 @@ func main() {
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// SIGTERM as well as SIGINT: `docker stop` sends SIGTERM, and without
+	// this the process is killed outright — in-flight feed builds are cut
+	// off and the container reports an unclean exit.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	<-ctx.Done()
 
