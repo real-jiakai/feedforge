@@ -1,8 +1,8 @@
+English | [简体中文](README.zh-CN.md)
+
 # FeedForge
 
 **Turn any web page into an RSS feed** — a self-hosted, open-source recreation of the late, great [Feed43](https://en.wikipedia.org/wiki/Feed43).
-
-English | [简体中文](README.zh-CN.md)
 
 Feed43 let you point at any web page, describe what to extract with simple
 `{%}` / `{*}` search patterns, and get a stable RSS URL. The service shut
