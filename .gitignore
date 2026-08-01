@@ -2,3 +2,7 @@
 /feedforge
 /feedforge.exe
 *.tmp
+
+# Local compose configuration — holds the API token. .env.example is tracked.
+/.env
+/docker-compose.override.yml

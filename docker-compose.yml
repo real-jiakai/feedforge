@@ -1,3 +1,10 @@
+# FeedForge — one-command deployment.
+#
+#   cp .env.example .env      # optional; do set FEEDFORGE_TOKEN if public
+#   docker compose up -d      # build + start on http://localhost:8080
+#
+# Automatic HTTPS on your own domain (adds a Caddy front end):
+#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
 services:
   feedforge:
     build: .
@@ -5,7 +12,11 @@ services:
     container_name: feedforge
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # Set FEEDFORGE_BIND=127.0.0.1 when a reverse proxy sits in front.
+      # Docker publishes ports through its own iptables rules, which are
+      # consulted before ufw/firewalld — a 0.0.0.0 publish really is
+      # reachable from the internet even if your firewall says otherwise.
+      - "${FEEDFORGE_BIND:-0.0.0.0}:${FEEDFORGE_PORT:-8080}:8080"
     volumes:
       - ./data:/data
     environment:
@@ -20,3 +31,26 @@ services:
       - FEEDFORGE_ALLOW_PRIVATE=${FEEDFORGE_ALLOW_PRIVATE:-false}
       # Max size of a fetched source page, in MB.
       - FEEDFORGE_MAX_FETCH_MB=${FEEDFORGE_MAX_FETCH_MB:-5}
+    # The entrypoint needs exactly three privileges: CHOWN to adopt a
+    # freshly created ./data, SETUID/SETGID for su-exec to drop to the
+    # unprivileged user. The binary itself needs none of them.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    # Nothing is written outside /data, so the rest of the image can be
+    # sealed. Keep FEEDFORGE_DATA pointing inside the mounted volume.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid
+    # Long enough for the 10s graceful shutdown to finish draining.
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

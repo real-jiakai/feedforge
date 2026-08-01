@@ -46,11 +46,8 @@ docker compose up -d
 Open <http://localhost:8080>, pick a recipe, and you'll have a working feed
 in under a minute. Feed definitions live in `./data`.
 
-To require a token for creating/editing feeds (feed URLs stay public):
-
-```bash
-FEEDFORGE_TOKEN=change-me docker compose up -d
-```
+That is the whole install — see [Docker Compose usage](#docker-compose-usage)
+for tokens, HTTPS, updates and backups.
 
 ### From source
 
@@ -205,6 +202,157 @@ encoding override.
 Set `FEEDFORGE_BASE_URL` when running behind a reverse proxy: without it the
 `atom:link rel="self"` in generated feeds is derived from the request's Host
 header.
+
+## Docker Compose usage
+
+`docker compose up -d` compiles the Go binary inside the build stage and
+starts one container — no Go toolchain, database, or reverse proxy required
+on the host. Feeds are JSON files under `./data`, which is all you ever need
+to back up.
+
+```bash
+git clone https://github.com/real-jiakai/feedforge.git
+cd feedforge
+cp .env.example .env      # optional; edit it before the first start
+docker compose up -d
+```
+
+What you get out of the shipped `docker-compose.yml`:
+
+- restarts on boot and on crash (`restart: unless-stopped`), with Docker
+  watching `/healthz` so `docker compose ps` tells you the truth;
+- an unprivileged runtime user, a read-only root filesystem, and every Linux
+  capability dropped except the `CHOWN`/`SETUID`/`SETGID` the entrypoint
+  needs to adopt a fresh `./data` and drop privileges;
+- log rotation at 3 × 10 MB, so a chatty feed can't fill the disk;
+- a 15 s stop grace period, long enough for in-flight feed builds to drain.
+
+### Configure with `.env`
+
+`.env` is read automatically by Compose; every key is optional. Copy
+`.env.example`, which documents each one, and restart with
+`docker compose up -d` to apply changes.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FEEDFORGE_TOKEN` | *(empty)* | require `Authorization: Bearer …` to create/edit feeds |
+| `FEEDFORGE_BIND` | `0.0.0.0` | host interface the port is published on |
+| `FEEDFORGE_PORT` | `8080` | host port (the container always uses 8080) |
+| `FEEDFORGE_BASE_URL` | *(from request)* | public origin baked into feed URLs |
+| `FEEDFORGE_ALLOW_PRIVATE` | `false` | allow scraping LAN/loopback addresses |
+| `FEEDFORGE_MAX_FETCH_MB` | `5` | source page size limit |
+| `FEEDFORGE_DOMAIN` | — | domain for the HTTPS overlay below |
+| `ACME_EMAIL` | *(empty)* | certificate expiry contact for that overlay |
+
+`FEEDFORGE_BIND`, `FEEDFORGE_PORT`, `FEEDFORGE_DOMAIN` and `ACME_EMAIL` are
+Compose-level settings; the rest map to the flags in
+[Configuration](#configuration).
+
+> **Publishing on a public host?** Set `FEEDFORGE_TOKEN`. Without it, anyone
+> who can reach the port can create feeds and make your server fetch URLs on
+> their behalf. And note that Docker inserts its own iptables rules ahead of
+> ufw/firewalld: a port published on `0.0.0.0` is reachable from the internet
+> even when your firewall lists no rule allowing it. Set
+> `FEEDFORGE_BIND=127.0.0.1` whenever a proxy fronts FeedForge.
+
+### Everyday commands
+
+```bash
+docker compose ps                 # status + health
+docker compose logs -f            # follow logs
+docker compose up -d              # apply a changed .env (recreates the container)
+docker compose restart            # restart in place — does NOT re-read .env
+docker compose stop               # stop, keep the container
+docker compose down               # stop and remove; ./data survives
+docker compose up -d --build      # rebuild after `git pull`
+```
+
+`restart` only stops and starts the existing container. Environment variables
+and port bindings are fixed when a container is *created*, so a token you just
+added to `.env` takes effect only after `docker compose up -d` recreates it.
+
+Upgrading is `git pull && docker compose up -d --build`. Feed definitions and
+first-seen history live in `./data` and are untouched by a rebuild.
+
+Back up and restore the whole service:
+
+```bash
+# Back up — safe to run while the service is up.
+tar czf feedforge-$(date +%F).tar.gz data/
+
+# Restore. Check the archive before destroying the only other copy.
+BACKUP=feedforge-2026-07-31.tar.gz
+tar tzf "$BACKUP" >/dev/null
+docker compose down
+sudo rm -rf data/
+sudo tar xzf "$BACKUP"
+docker compose up -d
+```
+
+`sudo` is needed because the entrypoint chowns `./data` to the container's
+`feedforge` user (uid 100); drop it if you drive Docker as root. Extracting as
+root also preserves that ownership, so the container starts without a re-chown.
+
+### HTTPS on your own domain
+
+`docker-compose.caddy.yml` adds a [Caddy](https://caddyserver.com) front end
+that obtains and renews a certificate automatically:
+
+```bash
+echo "FEEDFORGE_DOMAIN=feeds.example.com" >> .env
+echo "ACME_EMAIL=you@example.com"         >> .env   # optional
+docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
+```
+
+The overlay stops publishing FeedForge's own port — it is reachable only
+through Caddy — and defaults `FEEDFORGE_BASE_URL` to `https://$FEEDFORGE_DOMAIN`
+so generated feed URLs are right. Leave `FEEDFORGE_BASE_URL` empty in `.env`
+unless you moved `CADDY_HTTPS_PORT` off 443, in which case set it explicitly
+*including the port* — an explicit value still wins.
+
+The domain's DNS record must already point at the host and ports 80 and 443
+must be free, or the certificate order fails. Certificates persist in the
+`caddy_data` volume; keep it across upgrades to avoid re-issuing (and hitting
+Let's Encrypt rate limits). Every later command needs both `-f` flags, so it
+is worth exporting `COMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml`
+in your shell or `.env`.
+
+### Behind a reverse proxy you already run
+
+Publish on loopback only and tell FeedForge its public origin:
+
+```dotenv
+FEEDFORGE_BIND=127.0.0.1
+FEEDFORGE_BASE_URL=https://feeds.example.com
+```
+
+```caddy
+feeds.example.com {
+	reverse_proxy 127.0.0.1:8080
+}
+```
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+`X-Forwarded-Proto` matters only if you leave `FEEDFORGE_BASE_URL` unset —
+it is what stops feeds from advertising `http://` URLs while served over TLS.
+
+### Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `bind: address already in use` | something else owns the host port — set `FEEDFORGE_PORT` in `.env` |
+| `warning: could not chown /data` | `./data` belongs to another UID; `sudo chown -R 100:101 data/` or delete it and let the entrypoint recreate it |
+| status stuck at `health: starting` | the first check runs after 5 s; `docker compose logs` shows the real error |
+| feeds show stale items | each feed refetches at most once per its TTL — `POST /api/feeds/{id}/refresh` forces it |
+| feed URLs point at `localhost` | set `FEEDFORGE_BASE_URL` (or use the Caddy overlay) |
+| `401` from the API | `FEEDFORGE_TOKEN` is set; send `Authorization: Bearer <token>` |
 
 ## Architecture
 

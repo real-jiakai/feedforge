@@ -1,7 +1,10 @@
 data/
 .git/
 *.md
-docker-compose.yml
+docker-compose*.yml
+Caddyfile
+.env
+.env.*
 .gitignore
 .dockerignore
 feedforge

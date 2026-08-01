@@ -41,11 +41,8 @@ docker compose up -d
 打开 <http://localhost:8080>，选一个配方，一分钟内就能得到一个可用的订阅源。
 订阅源定义保存在 `./data` 目录。
 
-如果服务器可以从公网访问，建议设置令牌（订阅源地址仍然公开可读）：
-
-```bash
-FEEDFORGE_TOKEN=change-me docker compose up -d
-```
+安装到此为止 —— 令牌、HTTPS、升级和备份见
+[Docker Compose 用法](#docker-compose-用法)。
 
 ### 源码运行
 
@@ -189,6 +186,151 @@ href="/archives/{%}">{*}<div class="grid gap-2"><span class="font-{*}>{%}</span>
 
 放在反向代理后面时请设置 `FEEDFORGE_BASE_URL`：否则生成的订阅源里
 `atom:link rel="self"` 会根据请求的 Host 头推断。
+
+## Docker Compose 用法
+
+`docker compose up -d` 会在构建阶段里编译出 Go 二进制并启动一个容器 ——
+宿主机不需要 Go 工具链，也不需要数据库或反向代理。订阅源是 `./data`
+下的 JSON 文件，要备份的就只有这个目录。
+
+```bash
+git clone https://github.com/real-jiakai/feedforge.git
+cd feedforge
+cp .env.example .env      # 可选；第一次启动前先改好
+docker compose up -d
+```
+
+仓库自带的 `docker-compose.yml` 已经包含：
+
+- 开机自启、崩溃自动重启（`restart: unless-stopped`），并让 Docker 探测
+  `/healthz`，所以 `docker compose ps` 显示的健康状态是真实的；
+- 以非 root 用户运行、根文件系统只读、丢弃所有 Linux capability，
+  只保留入口脚本接管新建 `./data` 和降权所需的
+  `CHOWN`/`SETUID`/`SETGID`；
+- 日志轮转（3 × 10 MB），避免某个源刷屏把磁盘写满；
+- 15 秒的停止宽限期，足够正在生成的订阅源收尾。
+
+### 用 `.env` 配置
+
+Compose 会自动读取 `.env`，所有键都是可选的。复制 `.env.example`
+（里面每一项都有注释），改完后 `docker compose up -d` 即可生效。
+
+| 变量 | 默认值 | 作用 |
+|---|---|---|
+| `FEEDFORGE_TOKEN` | *（空）* | 创建/编辑订阅源需要 `Authorization: Bearer …` |
+| `FEEDFORGE_BIND` | `0.0.0.0` | 端口发布到宿主机的哪个网卡 |
+| `FEEDFORGE_PORT` | `8080` | 宿主机端口（容器内始终是 8080） |
+| `FEEDFORGE_BASE_URL` | *（按请求推断）* | 写进订阅源地址的公开域名 |
+| `FEEDFORGE_ALLOW_PRIVATE` | `false` | 允许抓取内网/回环地址 |
+| `FEEDFORGE_MAX_FETCH_MB` | `5` | 源页面大小上限 |
+| `FEEDFORGE_DOMAIN` | — | 下面 HTTPS 叠加文件使用的域名 |
+| `ACME_EMAIL` | *（空）* | 该叠加文件里证书到期提醒的邮箱 |
+
+其中 `FEEDFORGE_BIND`、`FEEDFORGE_PORT`、`FEEDFORGE_DOMAIN`、`ACME_EMAIL`
+只对 Compose 生效，其余对应[配置](#配置)一节里的命令行参数。
+
+> **要放到公网？** 请务必设置 `FEEDFORGE_TOKEN`。否则任何能访问端口的人
+> 都能创建订阅源，借你的服务器抓取任意网址。另外要注意：Docker 自己写的
+> iptables 规则排在 ufw/firewalld 之前，发布在 `0.0.0.0` 的端口即使防火墙
+> 里没有放行规则也照样能从公网访问。前面有反向代理时，请设置
+> `FEEDFORGE_BIND=127.0.0.1`。
+
+### 常用命令
+
+```bash
+docker compose ps                 # 状态 + 健康检查
+docker compose logs -f            # 跟踪日志
+docker compose up -d              # 让改过的 .env 生效（会重建容器）
+docker compose restart            # 原地重启 —— 不会重新读取 .env
+docker compose stop               # 停止但保留容器
+docker compose down               # 停止并删除容器；./data 不受影响
+docker compose up -d --build      # git pull 之后重新构建
+```
+
+`restart` 只是把现有容器停掉再启动。环境变量和端口映射是在容器**创建**时
+就固定下来的，所以刚写进 `.env` 的令牌必须等 `docker compose up -d`
+重建容器之后才会生效。
+
+升级就是 `git pull && docker compose up -d --build`。订阅源定义和条目
+首次出现时间都在 `./data` 里，重新构建不会动它们。
+
+备份与恢复整个服务：
+
+```bash
+# 备份 —— 服务运行中也可以直接执行。
+tar czf feedforge-$(date +%F).tar.gz data/
+
+# 恢复。删掉仅存的另一份数据之前，先确认压缩包是完好的。
+BACKUP=feedforge-2026-07-31.tar.gz
+tar tzf "$BACKUP" >/dev/null
+docker compose down
+sudo rm -rf data/
+sudo tar xzf "$BACKUP"
+docker compose up -d
+```
+
+需要 `sudo` 是因为入口脚本把 `./data` 的属主改成了容器里的 `feedforge`
+用户（uid 100）；如果你本来就以 root 身份操作 Docker，可以去掉。以 root
+解压还能保留原有属主，容器启动时就不必再 chown 一次。
+
+### 用自己的域名启用 HTTPS
+
+`docker-compose.caddy.yml` 会额外起一个 [Caddy](https://caddyserver.com)
+前端，自动申请并续期证书：
+
+```bash
+echo "FEEDFORGE_DOMAIN=feeds.example.com" >> .env
+echo "ACME_EMAIL=you@example.com"         >> .env   # 可选
+docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
+```
+
+叠加之后 FeedForge 自己的端口不再发布到宿主机，只能经 Caddy 访问；同时
+`FEEDFORGE_BASE_URL` 默认取 `https://$FEEDFORGE_DOMAIN`，保证生成的
+订阅源地址正确 —— 所以 `.env` 里的 `FEEDFORGE_BASE_URL` 留空即可。只有在
+把 `CADDY_HTTPS_PORT` 改成非 443 时，才需要显式写出**带端口**的地址：
+显式设置的值优先级更高。
+
+域名的 DNS 记录必须已经指向本机，且 80、443 端口空闲，否则签发会失败。
+证书保存在 `caddy_data` 卷里，升级时不要删除，避免反复签发触发
+Let's Encrypt 的频率限制。之后每条命令都要带上两个 `-f`，建议在 shell 或
+`.env` 里设置 `COMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml`。
+
+### 接入已有的反向代理
+
+只发布到回环地址，并告诉 FeedForge 它的公开域名：
+
+```dotenv
+FEEDFORGE_BIND=127.0.0.1
+FEEDFORGE_BASE_URL=https://feeds.example.com
+```
+
+```caddy
+feeds.example.com {
+	reverse_proxy 127.0.0.1:8080
+}
+```
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+`X-Forwarded-Proto` 只在不设 `FEEDFORGE_BASE_URL` 时才重要 —— 有了它，
+经 TLS 提供的订阅源才不会对外写成 `http://` 开头的地址。
+
+### 排查
+
+| 现象 | 原因与处理 |
+|---|---|
+| `bind: address already in use` | 宿主机端口被占用 —— 在 `.env` 里改 `FEEDFORGE_PORT` |
+| `warning: could not chown /data` | `./data` 属于别的 UID；执行 `sudo chown -R 100:101 data/`，或删掉让入口脚本重建 |
+| 状态一直是 `health: starting` | 首次检查在 5 秒后才跑；`docker compose logs` 里有真正的报错 |
+| 订阅源内容不更新 | 每个源在自己的 TTL 内最多抓一次 —— `POST /api/feeds/{id}/refresh` 可强制刷新 |
+| 订阅源地址指向 `localhost` | 设置 `FEEDFORGE_BASE_URL`（或改用 Caddy 叠加文件） |
+| API 返回 `401` | 设置了 `FEEDFORGE_TOKEN`，请带上 `Authorization: Bearer <token>` |
 
 ## 代码结构（也是教学导览）
 

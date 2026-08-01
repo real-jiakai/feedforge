@@ -1,0 +1,25 @@
+# Used by docker-compose.caddy.yml. Both placeholders come from .env, via
+# the environment the compose overlay passes in.
+#
+# A domain ending in .localhost makes Caddy issue a certificate from its own
+# internal CA instead of talking to Let's Encrypt — handy for trying the
+# HTTPS setup out before the real DNS record exists.
+{
+	# ACME_EMAIL=you@example.com in .env turns into an `email` directive
+	# here. Unset, it expands to nothing and Caddy registers with the
+	# certificate authority anonymously.
+	{$CADDY_GLOBAL_EXTRA}
+}
+
+{$FEEDFORGE_DOMAIN} {
+	encode zstd gzip
+
+	# Feed readers poll on a schedule and FeedForge already caches each
+	# build for the feed's TTL, so nothing extra is cached out here.
+	reverse_proxy feedforge:8080
+
+	log {
+		output stdout
+		format console
+	}
+}
