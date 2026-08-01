@@ -2,7 +2,7 @@
 
 **把任何网页变成 RSS 订阅源** —— 向经典服务 [Feed43](https://en.wikipedia.org/wiki/Feed43) 致敬的开源自部署复刻。
 
-[English README](README.md)
+[English](README.md) | 简体中文
 
 Feed43 曾经让你指向任意网页、用简单的 `{%}` / `{*}` 搜索模式描述要提取的内容，
 然后得到一个稳定的 RSS 地址。它随着域名过期而消失了；FeedForge 用一个 Go
