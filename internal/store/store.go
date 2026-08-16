@@ -358,6 +358,13 @@ func (s *Store) writeSeenLocked(id string, m map[string]time.Time) {
 }
 
 func atomicWrite(path string, data []byte) error {
+	// The parent directory can disappear behind our back — tmp cleaners
+	// prune empty directories, volumes get recreated — and every write
+	// after that would fail with ENOENT. Recreating it costs one cheap
+	// syscall and makes the store self-healing.
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
