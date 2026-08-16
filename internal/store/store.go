@@ -170,14 +170,6 @@ func (s *Store) ListOwned(ownerID string) []*Feed {
 	return out
 }
 
-// HasFeeds reports whether any feed exists at all (used to decide whether a
-// fresh instance should be seeded with the built-in recipes).
-func (s *Store) HasFeeds() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.feeds) > 0
-}
-
 // Get returns a copy of one feed.
 func (s *Store) Get(id string) (*Feed, error) {
 	s.mu.RLock()

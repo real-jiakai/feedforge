@@ -146,7 +146,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if u.IsAdmin && !s.cfg.Store.HasFeeds() {
+	if u.IsAdmin {
 		s.seedRecipes(u.ID)
 	}
 	if err := s.startSession(w, r, u.ID); err != nil {
@@ -157,9 +157,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, userInfo{ID: u.ID, Username: u.Username, IsAdmin: u.IsAdmin})
 }
 
-// seedRecipes creates the built-in recipe feeds for a brand-new instance.
+// seedRecipes gives the admin the built-in recipe feeds, skipping any
+// source the account already has — so a data directory carried over from
+// an older version (whose feeds were just adopted) still ends up with the
+// feeds this instance is meant to provide, without duplicates.
 func (s *Server) seedRecipes(ownerID string) {
+	existing := make(map[string]bool)
+	for _, f := range s.cfg.Store.ListOwned(ownerID) {
+		existing[f.SourceURL] = true
+	}
 	for _, rc := range Recipes {
+		if existing[rc.Feed.SourceURL] {
+			continue
+		}
 		f := rc.Feed
 		f.OwnerID = ownerID
 		if err := s.cfg.Store.Create(&f); err != nil {

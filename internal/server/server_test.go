@@ -807,7 +807,7 @@ func TestUsersCannotTouchEachOthersFeeds(t *testing.T) {
 	}
 }
 
-func TestLegacyFeedsAdoptedByFirstAdmin(t *testing.T) {
+func TestLegacyFeedsAdoptedAndMissingRecipesSeeded(t *testing.T) {
 	app, st, source := newTestServer(t)
 
 	// A feed from a pre-account data directory has no owner.
@@ -823,10 +823,52 @@ func TestLegacyFeedsAdoptedByFirstAdmin(t *testing.T) {
 	c := newClient(t)
 	register(t, app, c, "admin")
 	feeds := listFeeds(t, c, app)
-	// The legacy feed is adopted, and because the store was not empty the
-	// recipe seeding must not fire.
-	if len(feeds) != 1 || feeds[0].ID != legacy.ID {
-		t.Fatalf("expected exactly the adopted legacy feed, got %+v", feeds)
+	// The legacy feed is adopted AND the recipe feeds are still seeded:
+	// carrying over an old data directory must not leave the admin without
+	// the feeds this instance is meant to provide.
+	if len(feeds) != 1+len(Recipes) {
+		t.Fatalf("got %d feeds, want %d (legacy + recipes): %+v", len(feeds), 1+len(Recipes), feeds)
+	}
+	found := false
+	for _, f := range feeds {
+		if f.ID == legacy.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("legacy feed was not adopted")
+	}
+}
+
+func TestSeedingSkipsSourcesTheAdminAlreadyHas(t *testing.T) {
+	app, st, _ := newTestServer(t)
+
+	// A legacy feed already points at one of the recipe sources; seeding
+	// must not create a duplicate for it.
+	legacy := &store.Feed{
+		Title:       "My own OSSInsight feed",
+		SourceURL:   Recipes[0].Feed.SourceURL,
+		ItemPattern: `<li><a href="{%}">{%}</a>`,
+	}
+	if err := st.Create(legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	c := newClient(t)
+	register(t, app, c, "admin")
+	feeds := listFeeds(t, c, app)
+	if len(feeds) != len(Recipes) {
+		t.Fatalf("got %d feeds, want %d (adopted feed + remaining recipes): %+v",
+			len(feeds), len(Recipes), feeds)
+	}
+	bySource := map[string]int{}
+	for _, f := range feeds {
+		bySource[f.SourceURL]++
+	}
+	for src, n := range bySource {
+		if n > 1 {
+			t.Errorf("source %q appears %d times — seeding duplicated an existing feed", src, n)
+		}
 	}
 }
 
