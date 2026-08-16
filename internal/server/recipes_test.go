@@ -183,44 +183,16 @@ func TestRecipesEndpoint(t *testing.T) {
 	}
 }
 
-func TestDemoRecipeMatchesDemoPage(t *testing.T) {
-	// The demo recipe must keep working against the demo page the server
-	// itself generates.
-	st, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+func TestOnlyTheTwoIntendedRecipesShip(t *testing.T) {
+	// This instance deliberately offers just Bytes.dev and OSSInsight —
+	// other sites are already covered by other open-source projects.
+	want := map[string]bool{"ossinsight": true, "bytes": true}
+	if len(Recipes) != len(want) {
+		t.Fatalf("got %d recipes, want %d", len(Recipes), len(want))
 	}
-	app := httptest.NewServer(New(Config{
-		Store:   st,
-		Fetcher: fetch.New(false, 5*1024*1024, 10*time.Second),
-		WebFS:   fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("ui")}},
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}))
-	defer app.Close()
-
-	r := recipeByID(t, "demo")
-	body := map[string]any{
-		"sourceUrl":       r.Feed.SourceURL,
-		"globalPattern":   r.Feed.GlobalPattern,
-		"itemPattern":     r.Feed.ItemPattern,
-		"itemTitle":       r.Feed.ItemTitle,
-		"itemLink":        r.Feed.ItemLink,
-		"itemContent":     r.Feed.ItemContent,
-		"smartWhitespace": r.Feed.SmartWhitespace,
-	}
-	resp := postJSON(t, app.URL+"/api/preview", body, "")
-	defer resp.Body.Close()
-	var pv previewResponse
-	if err := json.NewDecoder(resp.Body).Decode(&pv); err != nil {
-		t.Fatal(err)
-	}
-	if pv.FetchError != "" || pv.ItemError != "" || pv.GlobalError != "" {
-		t.Fatalf("demo recipe errored: %+v", pv)
-	}
-	if len(pv.Items) != 6 {
-		t.Fatalf("got %d demo items, want 6", len(pv.Items))
-	}
-	if pv.Items[0].Title == "" {
-		t.Error("demo item has no title")
+	for _, r := range Recipes {
+		if !want[r.ID] {
+			t.Errorf("unexpected recipe %q", r.ID)
+		}
 	}
 }
