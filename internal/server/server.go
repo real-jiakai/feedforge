@@ -19,9 +19,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
-	"github.com/real-jiakai/feedforge/internal/fetch"
 	"github.com/real-jiakai/feedforge/internal/feed"
+	"github.com/real-jiakai/feedforge/internal/fetch"
 	"github.com/real-jiakai/feedforge/internal/pattern"
 	"github.com/real-jiakai/feedforge/internal/store"
 )
@@ -216,8 +217,15 @@ func cutString(s string, max int) (string, bool) {
 		return s, false
 	}
 	cut := s[:max]
-	// back off to a rune boundary
-	for len(cut) > 0 && cut[len(cut)-1] >= 0x80 && cut[len(cut)-1] < 0xC0 {
+	// If the cut point split a multi-byte rune, drop the partial rune so
+	// the excerpt stays valid UTF-8. DecodeLastRuneInString reports
+	// (RuneError, 1) for each trailing byte of an incomplete sequence; a
+	// complete final rune (of any width) is left alone.
+	for len(cut) > 0 {
+		r, size := utf8.DecodeLastRuneInString(cut)
+		if r != utf8.RuneError || size > 1 {
+			break
+		}
 		cut = cut[:len(cut)-1]
 	}
 	return cut, true

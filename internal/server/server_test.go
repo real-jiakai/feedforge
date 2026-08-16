@@ -13,6 +13,7 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+	"unicode/utf8"
 
 	"github.com/real-jiakai/feedforge/internal/fetch"
 	"github.com/real-jiakai/feedforge/internal/store"
@@ -619,6 +620,29 @@ func TestInvalidIDRejected(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want 404", path, resp.StatusCode)
+		}
+	}
+}
+
+func TestCutStringKeepsValidUTF8(t *testing.T) {
+	cases := []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"hello", 10, "hello"}, // shorter than max: untouched
+		{"hello", 4, "hell"},   // plain ASCII cut
+		{"aé-more", 3, "aé"},   // cut lands right after a complete rune
+		{"aé-more", 2, "a"},    // cut lands inside a rune
+		{"标题很长", 7, "标题"},      // CJK: 7 bytes = 2 runes + 1 partial byte
+	}
+	for _, c := range cases {
+		got, _ := cutString(c.in, c.max)
+		if got != c.want {
+			t.Errorf("cutString(%q, %d) = %q, want %q", c.in, c.max, got, c.want)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("cutString(%q, %d) produced invalid UTF-8: %q", c.in, c.max, got)
 		}
 	}
 }
