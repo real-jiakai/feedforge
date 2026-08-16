@@ -159,16 +159,24 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// readJSON decodes a request body, requiring a JSON content type. The
-// content-type check is what keeps a cross-origin HTML form (which can only
-// send text/plain, multipart or urlencoded, and needs no preflight) from
-// driving the mutating endpoints of a token-less deployment.
-func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	defer r.Body.Close()
+// requireJSONContentType enforces a JSON content type on mutating calls.
+// The check is what keeps a cross-origin HTML form (which can only send
+// text/plain, multipart or urlencoded, and needs no preflight) from driving
+// the mutating endpoints of a token-less deployment.
+func requireJSONContentType(w http.ResponseWriter, r *http.Request) bool {
 	ctype := strings.ToLower(strings.TrimSpace(strings.SplitN(r.Header.Get("Content-Type"), ";", 2)[0]))
 	if ctype != "application/json" {
 		writeJSON(w, http.StatusUnsupportedMediaType,
 			map[string]string{"error": `Content-Type must be application/json`})
+		return false
+	}
+	return true
+}
+
+// readJSON decodes a request body, requiring a JSON content type.
+func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	defer r.Body.Close()
+	if !requireJSONContentType(w, r) {
 		return false
 	}
 	dec := json.NewDecoder(io.LimitReader(r.Body, maxAPIBody))
@@ -194,10 +202,7 @@ func applySmartWhitespaceDefault(raw []byte, f *store.Feed) {
 // readJSONRaw decodes like readJSON but also returns the raw body bytes.
 func readJSONRaw(w http.ResponseWriter, r *http.Request, v any) ([]byte, bool) {
 	defer r.Body.Close()
-	ctype := strings.ToLower(strings.TrimSpace(strings.SplitN(r.Header.Get("Content-Type"), ";", 2)[0]))
-	if ctype != "application/json" {
-		writeJSON(w, http.StatusUnsupportedMediaType,
-			map[string]string{"error": `Content-Type must be application/json`})
+	if !requireJSONContentType(w, r) {
 		return nil, false
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, maxAPIBody))
@@ -324,6 +329,12 @@ func (s *Server) handleDeleteFeed(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRefreshFeed(w http.ResponseWriter, r *http.Request) {
+	// Refresh takes no body, but without this check it would be the one
+	// mutating endpoint a cross-origin HTML form could still drive on a
+	// token-less instance, forcing source refetches past the TTL.
+	if !requireJSONContentType(w, r) {
+		return
+	}
 	id := r.PathValue("id")
 	if _, err := s.cfg.Store.Get(id); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feed not found"})

@@ -342,7 +342,9 @@ function feedCard(f) {
   const refreshBtn = mkBtn(t("refresh"), async () => {
     refreshBtn.disabled = true;
     try {
-      await api(`/api/feeds/${f.id}/refresh`, { method: "POST" });
+      // The empty body sets Content-Type: application/json, which the
+      // server requires on every mutating call (CSRF guard).
+      await api(`/api/feeds/${f.id}/refresh`, { method: "POST", body: {} });
       toast(t("refreshed"));
       renderList();
     } catch (e) {

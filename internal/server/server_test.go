@@ -573,18 +573,35 @@ func TestSmartWhitespaceDefaultsOnForAPIClients(t *testing.T) {
 
 func TestMutatingEndpointsRequireJSONContentType(t *testing.T) {
 	app, _, source := newTestServer(t, "")
+	f := createFeed(t, app, source, "")
+
 	raw, _ := json.Marshal(mkFeed(source.URL))
-	// A cross-origin HTML form can only send this content type; it must be
-	// refused so a token-less deployment isn't drivable from any web page.
-	req, _ := http.NewRequest(http.MethodPost, app.URL+"/api/feeds", strings.NewReader(string(raw)))
-	req.Header.Set("Content-Type", "text/plain")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnsupportedMediaType {
-		t.Errorf("got %d, want 415", resp.StatusCode)
+	// A cross-origin HTML form can only send these content types; they must
+	// be refused so a token-less deployment isn't drivable from any web
+	// page. /refresh matters as much as the CRUD calls: without the check
+	// any page could force refetches past the TTL.
+	for _, tc := range []struct {
+		path  string
+		body  string
+		ctype string
+	}{
+		{"/api/feeds", string(raw), "text/plain"},
+		{"/api/feeds", string(raw), "application/x-www-form-urlencoded"},
+		{"/api/feeds/" + f.ID + "/refresh", "", "text/plain"},
+		{"/api/feeds/" + f.ID + "/refresh", "", ""},
+	} {
+		req, _ := http.NewRequest(http.MethodPost, app.URL+tc.path, strings.NewReader(tc.body))
+		if tc.ctype != "" {
+			req.Header.Set("Content-Type", tc.ctype)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnsupportedMediaType {
+			t.Errorf("POST %s (%s): got %d, want 415", tc.path, tc.ctype, resp.StatusCode)
+		}
 	}
 }
 
