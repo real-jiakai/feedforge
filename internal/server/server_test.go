@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -28,7 +29,7 @@ const samplePage = `<html><body>
 </ul>
 </body></html>`
 
-func newTestServer(t *testing.T, token string) (*httptest.Server, *store.Store, *httptest.Server) {
+func newTestServer(t *testing.T) (*httptest.Server, *store.Store, *httptest.Server) {
 	t.Helper()
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -44,13 +45,66 @@ func newTestServer(t *testing.T, token string) (*httptest.Server, *store.Store, 
 		Store: st,
 		// allowPrivate=true: the test source server listens on loopback.
 		Fetcher: fetch.New(true, 5*1024*1024, 10*time.Second),
-		Token:   token,
 		WebFS:   fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html>ui</html>")}},
 		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	app := httptest.NewServer(handler)
 	t.Cleanup(app.Close)
 	return app, st, source
+}
+
+// newClient returns an HTTP client with a cookie jar, so it can hold a
+// session across requests.
+func newClient(t *testing.T) *http.Client {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Client{Jar: jar}
+}
+
+// register creates an account through the API and leaves the session cookie
+// in the client's jar. The first account on a server becomes the admin.
+func register(t *testing.T, app *httptest.Server, c *http.Client, username string) userInfo {
+	t.Helper()
+	resp := postJSON(t, c, app.URL+"/api/auth/register",
+		map[string]any{"username": username, "password": "password123"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("register %q: HTTP %d: %s", username, resp.StatusCode, raw)
+	}
+	var u userInfo
+	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// adminClient registers the server's first account and returns its client.
+func adminClient(t *testing.T, app *httptest.Server) *http.Client {
+	t.Helper()
+	c := newClient(t)
+	register(t, app, c, "admin")
+	return c
+}
+
+func jsonReq(t *testing.T, c *http.Client, method, url string, body any) *http.Response {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	req, _ := http.NewRequest(method, url, strings.NewReader(string(raw)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func postJSON(t *testing.T, c *http.Client, url string, body any) *http.Response {
+	t.Helper()
+	return jsonReq(t, c, http.MethodPost, url, body)
 }
 
 func mkFeed(sourceURL string) map[string]any {
@@ -68,24 +122,9 @@ func mkFeed(sourceURL string) map[string]any {
 	}
 }
 
-func postJSON(t *testing.T, url string, body any, token string) *http.Response {
+func createFeed(t *testing.T, c *http.Client, app *httptest.Server, source *httptest.Server) store.Feed {
 	t.Helper()
-	raw, _ := json.Marshal(body)
-	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(string(raw)))
-	req.Header.Set("Content-Type", "application/json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resp
-}
-
-func createFeed(t *testing.T, app *httptest.Server, source *httptest.Server, token string) store.Feed {
-	t.Helper()
-	resp := postJSON(t, app.URL+"/api/feeds", mkFeed(source.URL), token)
+	resp := postJSON(t, c, app.URL+"/api/feeds", mkFeed(source.URL))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		raw, _ := io.ReadAll(resp.Body)
@@ -96,6 +135,23 @@ func createFeed(t *testing.T, app *httptest.Server, source *httptest.Server, tok
 		t.Fatal(err)
 	}
 	return f
+}
+
+func listFeeds(t *testing.T, c *http.Client, app *httptest.Server) []store.Feed {
+	t.Helper()
+	resp, err := c.Get(app.URL + "/api/feeds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list feeds: HTTP %d", resp.StatusCode)
+	}
+	var feeds []store.Feed
+	if err := json.NewDecoder(resp.Body).Decode(&feeds); err != nil {
+		t.Fatal(err)
+	}
+	return feeds
 }
 
 type rssOut struct {
@@ -129,9 +185,12 @@ func fetchRSS(t *testing.T, url string) (rssOut, []byte) {
 	return out, raw
 }
 
+// ---------- feed pipeline ----------
+
 func TestEndToEndRSS(t *testing.T) {
-	app, _, source := newTestServer(t, "")
-	f := createFeed(t, app, source, "")
+	app, _, source := newTestServer(t)
+	c := adminClient(t, app)
+	f := createFeed(t, c, app, source)
 
 	out, raw := fetchRSS(t, app.URL+"/feeds/"+f.ID+".xml")
 	if out.Channel.Title != "Test Feed" {
@@ -164,12 +223,13 @@ func TestEndToEndRSS(t *testing.T) {
 }
 
 func TestGUIDAndPubDateStableAcrossRebuilds(t *testing.T) {
-	app, _, source := newTestServer(t, "")
-	f := createFeed(t, app, source, "")
+	app, _, source := newTestServer(t)
+	c := adminClient(t, app)
+	f := createFeed(t, c, app, source)
 
 	first, _ := fetchRSS(t, app.URL+"/feeds/"+f.ID+".xml")
 	// Force a refetch (cache bypass) and compare.
-	resp := postJSON(t, app.URL+"/api/feeds/"+f.ID+"/refresh", map[string]any{}, "")
+	resp := postJSON(t, c, app.URL+"/api/feeds/"+f.ID+"/refresh", map[string]any{})
 	resp.Body.Close()
 	second, _ := fetchRSS(t, app.URL+"/feeds/"+f.ID+".xml")
 
@@ -182,8 +242,9 @@ func TestGUIDAndPubDateStableAcrossRebuilds(t *testing.T) {
 }
 
 func TestJSONFeedOutput(t *testing.T) {
-	app, _, source := newTestServer(t, "")
-	f := createFeed(t, app, source, "")
+	app, _, source := newTestServer(t)
+	c := adminClient(t, app)
+	f := createFeed(t, c, app, source)
 
 	resp, err := http.Get(app.URL + "/feeds/" + f.ID + ".json")
 	if err != nil {
@@ -210,33 +271,6 @@ func TestJSONFeedOutput(t *testing.T) {
 	}
 }
 
-func TestAuthRequiredForMutations(t *testing.T) {
-	app, _, source := newTestServer(t, "sekrit")
-
-	// Without a token: rejected.
-	resp := postJSON(t, app.URL+"/api/feeds", mkFeed(source.URL), "")
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", resp.StatusCode)
-	}
-	// With the token: accepted.
-	f := createFeed(t, app, source, "sekrit")
-	// Feed output stays public.
-	out, _ := fetchRSS(t, app.URL+"/feeds/"+f.ID+".xml")
-	if len(out.Channel.Items) == 0 {
-		t.Error("feed output should be public")
-	}
-	// Reads stay public.
-	r2, err := http.Get(app.URL + "/api/feeds")
-	if err != nil {
-		t.Fatal(err)
-	}
-	r2.Body.Close()
-	if r2.StatusCode != http.StatusOK {
-		t.Errorf("list should be public, got %d", r2.StatusCode)
-	}
-}
-
 func TestSSRFGuardBlocksLoopback(t *testing.T) {
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, samplePage)
@@ -256,7 +290,8 @@ func TestSSRFGuardBlocksLoopback(t *testing.T) {
 	app := httptest.NewServer(handler)
 	defer app.Close()
 
-	f := createFeed(t, app, source, "")
+	c := adminClient(t, app)
+	f := createFeed(t, c, app, source)
 	resp, err := http.Get(app.URL + "/feeds/" + f.ID + ".xml")
 	if err != nil {
 		t.Fatal(err)
@@ -268,7 +303,8 @@ func TestSSRFGuardBlocksLoopback(t *testing.T) {
 }
 
 func TestPreviewEndpoint(t *testing.T) {
-	app, _, source := newTestServer(t, "")
+	app, _, source := newTestServer(t)
+	c := adminClient(t, app)
 	body := map[string]any{
 		"sourceUrl":       source.URL,
 		"globalPattern":   `<ul class="news">{%}</ul>`,
@@ -278,7 +314,7 @@ func TestPreviewEndpoint(t *testing.T) {
 		"smartWhitespace": true,
 		"includePage":     true,
 	}
-	resp := postJSON(t, app.URL+"/api/preview", body, "")
+	resp := postJSON(t, c, app.URL+"/api/preview", body)
 	defer resp.Body.Close()
 	var pv previewResponse
 	if err := json.NewDecoder(resp.Body).Decode(&pv); err != nil {
@@ -304,8 +340,9 @@ func TestXMLEscapingOfHostileContent(t *testing.T) {
 	}))
 	defer hostile.Close()
 
-	app, _, _ := newTestServer(t, "")
-	f := createFeed(t, app, hostile, "")
+	app, _, _ := newTestServer(t)
+	c := adminClient(t, app)
+	f := createFeed(t, c, app, hostile)
 
 	out, raw := fetchRSS(t, app.URL+"/feeds/"+f.ID+".xml")
 	if len(out.Channel.Items) != 1 {
@@ -333,6 +370,7 @@ func TestDemoPageServedInProcess(t *testing.T) {
 	app := httptest.NewServer(handler)
 	defer app.Close()
 
+	c := adminClient(t, app)
 	feedDef := map[string]any{
 		"title":           "Demo",
 		"sourceUrl":       store.DemoSourceURL,
@@ -342,7 +380,7 @@ func TestDemoPageServedInProcess(t *testing.T) {
 		"itemLink":        "{%1}",
 		"smartWhitespace": true,
 	}
-	resp := postJSON(t, app.URL+"/api/feeds", feedDef, "")
+	resp := postJSON(t, c, app.URL+"/api/feeds", feedDef)
 	var f store.Feed
 	if err := json.NewDecoder(resp.Body).Decode(&f); err != nil {
 		t.Fatal(err)
@@ -364,9 +402,10 @@ func TestDemoPageServedInProcess(t *testing.T) {
 func TestDemoSourceCannotBeSpoofedViaHostHeader(t *testing.T) {
 	// A feed pointing at a real host must never be short-circuited to the
 	// built-in demo HTML just because a client claims that Host.
-	app, _, source := newTestServer(t, "")
+	app, _, source := newTestServer(t)
+	c := adminClient(t, app)
 	def := mkFeed(source.URL + "/demo")
-	resp := postJSON(t, app.URL+"/api/feeds", def, "")
+	resp := postJSON(t, c, app.URL+"/api/feeds", def)
 	var f store.Feed
 	_ = json.NewDecoder(resp.Body).Decode(&f)
 	resp.Body.Close()
@@ -401,8 +440,9 @@ func TestCacheServesWithoutRefetch(t *testing.T) {
 	}))
 	defer source.Close()
 
-	app, _, _ := newTestServer(t, "")
-	f := createFeed(t, app, source, "")
+	app, _, _ := newTestServer(t)
+	c := adminClient(t, app)
+	f := createFeed(t, c, app, source)
 
 	fetchRSS(t, app.URL+"/feeds/"+f.ID+".xml")
 	fetchRSS(t, app.URL+"/feeds/"+f.ID+".xml")
@@ -423,8 +463,9 @@ func TestHostileSchemesAreStrippedFromLinks(t *testing.T) {
 	}))
 	defer hostile.Close()
 
-	app, _, _ := newTestServer(t, "")
-	f := createFeed(t, app, hostile, "")
+	app, _, _ := newTestServer(t)
+	c := adminClient(t, app)
+	f := createFeed(t, c, app, hostile)
 	out, raw := fetchRSS(t, app.URL+"/feeds/"+f.ID+".xml")
 
 	if len(out.Channel.Items) != 4 {
@@ -460,11 +501,12 @@ func TestReverseKeepsNewestWhenPageExceedsMaxItems(t *testing.T) {
 	}))
 	defer source.Close()
 
-	app, _, _ := newTestServer(t, "")
+	app, _, _ := newTestServer(t)
+	c := adminClient(t, app)
 	def := mkFeed(source.URL)
 	def["reverse"] = true
 	def["maxItems"] = 3
-	resp := postJSON(t, app.URL+"/api/feeds", def, "")
+	resp := postJSON(t, c, app.URL+"/api/feeds", def)
 	var f store.Feed
 	_ = json.NewDecoder(resp.Body).Decode(&f)
 	resp.Body.Close()
@@ -492,12 +534,13 @@ func TestForcedRefreshReportsFailure(t *testing.T) {
 	}))
 	defer source.Close()
 
-	app, _, _ := newTestServer(t, "")
-	f := createFeed(t, app, source, "")
+	app, _, _ := newTestServer(t)
+	c := adminClient(t, app)
+	f := createFeed(t, c, app, source)
 	fetchRSS(t, app.URL+"/feeds/"+f.ID+".xml") // prime the cache
 
 	healthy = false
-	resp := postJSON(t, app.URL+"/api/feeds/"+f.ID+"/refresh", map[string]any{}, "")
+	resp := postJSON(t, c, app.URL+"/api/feeds/"+f.ID+"/refresh", map[string]any{})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		body, _ := io.ReadAll(resp.Body)
@@ -507,22 +550,17 @@ func TestForcedRefreshReportsFailure(t *testing.T) {
 }
 
 func TestEditingFeedKeepsStatus(t *testing.T) {
-	app, _, source := newTestServer(t, "")
-	f := createFeed(t, app, source, "")
+	app, _, source := newTestServer(t)
+	c := adminClient(t, app)
+	f := createFeed(t, c, app, source)
 	fetchRSS(t, app.URL+"/feeds/"+f.ID+".xml") // produces a status
 
 	def := mkFeed(source.URL)
 	def["title"] = "Renamed"
-	raw, _ := json.Marshal(def)
-	req, _ := http.NewRequest(http.MethodPut, app.URL+"/api/feeds/"+f.ID, strings.NewReader(string(raw)))
-	req.Header.Set("Content-Type", "application/json")
-	r, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	r := jsonReq(t, c, http.MethodPut, app.URL+"/api/feeds/"+f.ID, def)
 	r.Body.Close()
 
-	got, err := http.Get(app.URL + "/api/feeds/" + f.ID)
+	got, err := c.Get(app.URL + "/api/feeds/" + f.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +586,8 @@ func TestSmartWhitespaceDefaultsOnForAPIClients(t *testing.T) {
 	}))
 	defer source.Close()
 
-	app, _, _ := newTestServer(t, "")
+	app, _, _ := newTestServer(t)
+	c := adminClient(t, app)
 	def := map[string]any{
 		"title":         "No flag",
 		"sourceUrl":     source.URL,
@@ -558,7 +597,7 @@ func TestSmartWhitespaceDefaultsOnForAPIClients(t *testing.T) {
 		"itemLink":      "{%1}",
 		// smartWhitespace deliberately omitted
 	}
-	resp := postJSON(t, app.URL+"/api/feeds", def, "")
+	resp := postJSON(t, c, app.URL+"/api/feeds", def)
 	var f store.Feed
 	_ = json.NewDecoder(resp.Body).Decode(&f)
 	resp.Body.Close()
@@ -571,43 +610,10 @@ func TestSmartWhitespaceDefaultsOnForAPIClients(t *testing.T) {
 	}
 }
 
-func TestMutatingEndpointsRequireJSONContentType(t *testing.T) {
-	app, _, source := newTestServer(t, "")
-	f := createFeed(t, app, source, "")
-
-	raw, _ := json.Marshal(mkFeed(source.URL))
-	// A cross-origin HTML form can only send these content types; they must
-	// be refused so a token-less deployment isn't drivable from any web
-	// page. /refresh matters as much as the CRUD calls: without the check
-	// any page could force refetches past the TTL.
-	for _, tc := range []struct {
-		path  string
-		body  string
-		ctype string
-	}{
-		{"/api/feeds", string(raw), "text/plain"},
-		{"/api/feeds", string(raw), "application/x-www-form-urlencoded"},
-		{"/api/feeds/" + f.ID + "/refresh", "", "text/plain"},
-		{"/api/feeds/" + f.ID + "/refresh", "", ""},
-	} {
-		req, _ := http.NewRequest(http.MethodPost, app.URL+tc.path, strings.NewReader(tc.body))
-		if tc.ctype != "" {
-			req.Header.Set("Content-Type", tc.ctype)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusUnsupportedMediaType {
-			t.Errorf("POST %s (%s): got %d, want 415", tc.path, tc.ctype, resp.StatusCode)
-		}
-	}
-}
-
 func TestSelfLinkFollowsRequestNotCache(t *testing.T) {
-	app, _, source := newTestServer(t, "")
-	f := createFeed(t, app, source, "")
+	app, _, source := newTestServer(t)
+	c := adminClient(t, app)
+	f := createFeed(t, c, app, source)
 
 	// Prime the cache through a request claiming an attacker-chosen Host.
 	req, _ := http.NewRequest(http.MethodGet, app.URL+"/feeds/"+f.ID+".xml", nil)
@@ -626,7 +632,7 @@ func TestSelfLinkFollowsRequestNotCache(t *testing.T) {
 }
 
 func TestInvalidIDRejected(t *testing.T) {
-	app, _, _ := newTestServer(t, "")
+	app, _, _ := newTestServer(t)
 	for _, path := range []string{
 		"/feeds/UPPER.xml", "/feeds/..%2Fx.xml", "/feeds/abc.exe", "/feeds/ab.xml",
 	} {
@@ -660,6 +666,282 @@ func TestCutStringKeepsValidUTF8(t *testing.T) {
 		}
 		if !utf8.ValidString(got) {
 			t.Errorf("cutString(%q, %d) produced invalid UTF-8: %q", c.in, c.max, got)
+		}
+	}
+}
+
+// ---------- accounts ----------
+
+func TestLoginRequiredForAPI(t *testing.T) {
+	app, _, source := newTestServer(t)
+
+	// Anonymous API access is refused across the board.
+	anon := newClient(t)
+	resp, err := anon.Get(app.URL + "/api/feeds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("anonymous list: got %d, want 401", resp.StatusCode)
+	}
+	for _, path := range []string{"/api/feeds", "/api/preview"} {
+		r := postJSON(t, anon, app.URL+path, mkFeed(source.URL))
+		r.Body.Close()
+		if r.StatusCode != http.StatusUnauthorized {
+			t.Errorf("anonymous POST %s: got %d, want 401", path, r.StatusCode)
+		}
+	}
+
+	// Feed output stays public: readers cannot sign in.
+	c := adminClient(t, app)
+	f := createFeed(t, c, app, source)
+	out, _ := fetchRSS(t, app.URL+"/feeds/"+f.ID+".xml")
+	if len(out.Channel.Items) == 0 {
+		t.Error("feed output should be public")
+	}
+}
+
+func TestFirstUserIsAdminAndGetsSeededRecipes(t *testing.T) {
+	app, _, _ := newTestServer(t)
+	c := newClient(t)
+	u := register(t, app, c, "alice")
+	if !u.IsAdmin {
+		t.Error("first registered user should be the admin")
+	}
+	// A fresh instance seeds the two built-in recipe feeds, so "Your
+	// feeds" starts as exactly the feeds this instance is meant to serve.
+	feeds := listFeeds(t, c, app)
+	if len(feeds) != len(Recipes) {
+		t.Fatalf("got %d seeded feeds, want %d", len(feeds), len(Recipes))
+	}
+	seen := map[string]bool{}
+	for _, f := range feeds {
+		seen[f.SourceURL] = true
+	}
+	for _, rc := range Recipes {
+		if !seen[rc.Feed.SourceURL] {
+			t.Errorf("recipe %q was not seeded", rc.ID)
+		}
+	}
+}
+
+func TestRegistrationDisabledByDefault(t *testing.T) {
+	app, _, _ := newTestServer(t)
+	admin := adminClient(t, app)
+
+	// Second registration is refused while the toggle is off.
+	bob := newClient(t)
+	resp := postJSON(t, bob, app.URL+"/api/auth/register",
+		map[string]any{"username": "bob", "password": "password123"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("second registration: got %d, want 403", resp.StatusCode)
+	}
+
+	// The admin enables registration; now it works, and the new account
+	// is a regular user.
+	r := jsonReq(t, admin, http.MethodPut, app.URL+"/api/admin/settings",
+		map[string]any{"registrationEnabled": true})
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("enable registration: got %d", r.StatusCode)
+	}
+	u := register(t, app, bob, "bob")
+	if u.IsAdmin {
+		t.Error("second user must not be an admin")
+	}
+
+	// Regular users cannot touch the admin settings.
+	r2 := jsonReq(t, bob, http.MethodPut, app.URL+"/api/admin/settings",
+		map[string]any{"registrationEnabled": false})
+	r2.Body.Close()
+	if r2.StatusCode != http.StatusForbidden {
+		t.Errorf("non-admin toggling registration: got %d, want 403", r2.StatusCode)
+	}
+}
+
+func TestUsersCannotTouchEachOthersFeeds(t *testing.T) {
+	app, _, source := newTestServer(t)
+	admin := adminClient(t, app)
+	r := jsonReq(t, admin, http.MethodPut, app.URL+"/api/admin/settings",
+		map[string]any{"registrationEnabled": true})
+	r.Body.Close()
+	bob := newClient(t)
+	register(t, app, bob, "bob")
+
+	f := createFeed(t, admin, app, source)
+
+	// Bob's list shows only his own (zero) feeds.
+	if feeds := listFeeds(t, bob, app); len(feeds) != 0 {
+		t.Errorf("bob sees %d feeds that are not his", len(feeds))
+	}
+	// Read, update, delete and refresh of someone else's feed all 404.
+	resp, err := bob.Get(app.URL + "/api/feeds/" + f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("bob reading admin's feed: got %d, want 404", resp.StatusCode)
+	}
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPut, "/api/feeds/" + f.ID},
+		{http.MethodDelete, "/api/feeds/" + f.ID},
+		{http.MethodPost, "/api/feeds/" + f.ID + "/refresh"},
+	} {
+		r := jsonReq(t, bob, tc.method, app.URL+tc.path, mkFeed(source.URL))
+		r.Body.Close()
+		if r.StatusCode != http.StatusNotFound {
+			t.Errorf("bob %s %s: got %d, want 404", tc.method, tc.path, r.StatusCode)
+		}
+	}
+	// The feed is untouched for its owner.
+	resp2, err := admin.Get(app.URL + "/api/feeds/" + f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("owner lost access to their feed: %d", resp2.StatusCode)
+	}
+}
+
+func TestLegacyFeedsAdoptedByFirstAdmin(t *testing.T) {
+	app, st, source := newTestServer(t)
+
+	// A feed from a pre-account data directory has no owner.
+	legacy := &store.Feed{
+		Title:       "Legacy",
+		SourceURL:   source.URL,
+		ItemPattern: `<li><a href="{%}">{%}</a>`,
+	}
+	if err := st.Create(legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	c := newClient(t)
+	register(t, app, c, "admin")
+	feeds := listFeeds(t, c, app)
+	// The legacy feed is adopted, and because the store was not empty the
+	// recipe seeding must not fire.
+	if len(feeds) != 1 || feeds[0].ID != legacy.ID {
+		t.Fatalf("expected exactly the adopted legacy feed, got %+v", feeds)
+	}
+}
+
+func TestLogoutEndsSession(t *testing.T) {
+	app, _, _ := newTestServer(t)
+	c := adminClient(t, app)
+
+	resp, err := c.Get(app.URL + "/api/auth/me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("me while signed in: got %d", resp.StatusCode)
+	}
+
+	r := postJSON(t, c, app.URL+"/api/auth/logout", map[string]any{})
+	r.Body.Close()
+
+	resp2, err := c.Get(app.URL + "/api/auth/me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Errorf("me after logout: got %d, want 401", resp2.StatusCode)
+	}
+}
+
+func TestLoginRejectsBadCredentials(t *testing.T) {
+	app, _, _ := newTestServer(t)
+	adminClient(t, app) // creates user "admin" / "password123"
+
+	for _, body := range []map[string]any{
+		{"username": "admin", "password": "wrong-password"},
+		{"username": "nobody", "password": "password123"},
+	} {
+		c := newClient(t)
+		resp := postJSON(t, c, app.URL+"/api/auth/login", body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("login %v: got %d, want 401", body, resp.StatusCode)
+		}
+	}
+
+	// The right credentials still work.
+	c := newClient(t)
+	resp := postJSON(t, c, app.URL+"/api/auth/login",
+		map[string]any{"username": "admin", "password": "password123"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("valid login: got %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestConfigReflectsSetupState(t *testing.T) {
+	app, _, _ := newTestServer(t)
+
+	getConfig := func() map[string]any {
+		t.Helper()
+		resp, err := http.Get(app.URL + "/api/config")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var cfg map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+
+	if cfg := getConfig(); cfg["needsSetup"] != true {
+		t.Errorf("fresh instance should report needsSetup=true, got %v", cfg)
+	}
+	adminClient(t, app)
+	if cfg := getConfig(); cfg["needsSetup"] != false {
+		t.Errorf("after the first registration needsSetup should be false, got %v", cfg)
+	}
+}
+
+func TestMutatingEndpointsRequireJSONContentType(t *testing.T) {
+	app, _, source := newTestServer(t)
+	c := adminClient(t, app)
+	f := createFeed(t, c, app, source)
+
+	raw, _ := json.Marshal(mkFeed(source.URL))
+	// A cross-origin HTML form can only send these content types; they must
+	// be refused so cookie-holding browsers can't be driven from any web
+	// page. /refresh matters as much as the CRUD calls: without the check
+	// any page could force refetches past the TTL.
+	for _, tc := range []struct {
+		path  string
+		body  string
+		ctype string
+	}{
+		{"/api/feeds", string(raw), "text/plain"},
+		{"/api/feeds", string(raw), "application/x-www-form-urlencoded"},
+		{"/api/feeds/" + f.ID + "/refresh", "", "text/plain"},
+		{"/api/feeds/" + f.ID + "/refresh", "", ""},
+		{"/api/auth/register", `{"username":"x","password":"password123"}`, "text/plain"},
+		{"/api/auth/login", `{"username":"admin","password":"password123"}`, "text/plain"},
+		{"/api/auth/logout", "", "text/plain"},
+	} {
+		req, _ := http.NewRequest(http.MethodPost, app.URL+tc.path, strings.NewReader(tc.body))
+		if tc.ctype != "" {
+			req.Header.Set("Content-Type", tc.ctype)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnsupportedMediaType {
+			t.Errorf("POST %s (%s): got %d, want 415", tc.path, tc.ctype, resp.StatusCode)
 		}
 	}
 }

@@ -312,6 +312,33 @@ label.check input { width: auto; }
   overflow-wrap: anywhere;
 }
 
+/* ---------- auth ---------- */
+.auth-card {
+  max-width: 400px;
+  margin: 8vh auto 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 26px 30px 24px;
+}
+.auth-card h1 { margin: 0 0 4px; font-size: 22px; }
+.auth-card .btn.big { width: 100%; justify-content: center; margin-top: 18px; }
+.auth-switch { text-align: center; margin-top: 14px; }
+.auth-switch a { color: var(--accent); }
+.user-box { display: inline-flex; align-items: center; gap: 8px; }
+.user-name { font-weight: 600; font-size: 14px; }
+
+.admin-panel {
+  margin-top: 38px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px 20px;
+}
+.admin-panel h2 { margin: 0 0 6px; font-size: 19px; }
+
 /* ---------- toast ---------- */
 #toast {
   position: fixed;

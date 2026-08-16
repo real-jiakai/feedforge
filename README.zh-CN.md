@@ -13,7 +13,8 @@
 - **内置配方** —— [Bytes.dev](https://bytes.dev/archives) 和 [OSSInsight](https://ossinsight.io/blog)，都有针对页面副本的测试保护。
 - **RSS 2.0 与 JSON Feed 1.1** 双格式输出，条目日期取首次出现时间、保持稳定。
 - **编码友好** —— 自动检测网页编码，也可按订阅源强制 GBK/Big5/Shift_JIS 等。
-- **默认安全** —— SSRF 防护、大小和时间上限、输出严格转义、可选 API 令牌。
+- **多用户** —— 每个账户管理自己的订阅源。第一个账户是管理员，由它决定是否开放注册（默认关闭）。
+- **默认安全** —— SSRF 防护、大小和时间上限、输出严格转义、带 CSRF 防护的会话登录。
 - **单个静态二进制**，Docker 一条命令部署，自带 `/demo` 练习页。
 
 ## 快速开始
@@ -31,7 +32,7 @@ go build -o feedforge .
 ./feedforge -addr :8080 -data ./data
 ```
 
-选一个配方（或自己写模式），保存，订阅。所有数据都在 `./data` 目录 —— 备份它就是备份一切（`tar czf backup.tar.gz data/`）。
+第一次访问会引导你创建**管理员账户**；全新实例会自动为它建好两个配方订阅源（Bytes.dev、OSSInsight）。所有数据都在 `./data` 目录 —— 备份它就是备份一切（`tar czf backup.tar.gz data/`）。
 
 ## 一分钟学会写模式
 
@@ -75,15 +76,18 @@ go build -o feedforge .
 
 | 方法与路径 | 说明 |
 |---|---|
+| `POST /api/auth/register`、`…/login`、`…/logout` | 账户与会话（注册：史上第一个用户 = 管理员，之后仅在开放注册时可用） |
+| `GET /api/auth/me` | 当前用户 |
+| `GET`、`PUT /api/admin/settings` | 管理员：切换 `registrationEnabled` |
 | `GET /api/recipes` | 列出内置配方 |
-| `GET /api/feeds`、`POST /api/feeds` | 列出 / 创建订阅源 |
-| `GET`、`PUT`、`DELETE /api/feeds/{id}` | 读取 / 更新 / 删除单个订阅源 |
+| `GET /api/feeds`、`POST /api/feeds` | 列出 / 创建自己的订阅源 |
+| `GET`、`PUT`、`DELETE /api/feeds/{id}` | 读取 / 更新 / 删除自己的订阅源 |
 | `POST /api/feeds/{id}/refresh` | 立即强制重新抓取 |
 | `POST /api/preview` | 对页面试运行模式 |
 | `GET /feeds/{id}.xml`、`GET /feeds/{id}.json` | RSS 2.0 / JSON Feed 输出 |
 | `GET /demo`、`GET /healthz` | 练习页、健康检查 |
 
-写操作必须带 `Content-Type: application/json`；设置了 `FEEDFORGE_TOKEN` 时还需 `Authorization: Bearer <token>`。读取和订阅源输出始终公开。
+除 `config`、`recipes`、`auth` 外，`/api` 下的所有接口都需要登录会话（HttpOnly Cookie）；订阅源只有属主可见。写操作必须带 `Content-Type: application/json`。订阅源输出始终公开 —— 阅读器不需要登录。
 
 ## 配置
 
@@ -91,7 +95,6 @@ go build -o feedforge .
 |---|---|---|---|
 | `FEEDFORGE_ADDR` | `-addr` | `:8080` | 监听地址 |
 | `FEEDFORGE_DATA` | `-data` | `./data`（Docker 内 `/data`） | 数据目录 |
-| `FEEDFORGE_TOKEN` | `-token` | *（空 = 开放）* | 编辑操作的 API 令牌 |
 | `FEEDFORGE_BASE_URL` | `-base-url` | *（从请求推导）* | 生成订阅地址所用的公开域名 |
 | `FEEDFORGE_ALLOW_PRIVATE` | `-allow-private` | `false` | 允许抓取内网地址 |
 | `FEEDFORGE_MAX_FETCH_MB` | `-max-fetch-mb` | `5` | 源页面大小上限 |
@@ -100,7 +103,7 @@ go build -o feedforge .
 
 ## 部署
 
-- **公网主机务必设置 `FEEDFORGE_TOKEN`** —— 否则任何能访问端口的人都能创建订阅源、让你的服务器替他抓取网页。注意 Docker 发布的端口会绕过 ufw/firewalld。
+- **首次启动后立刻创建管理员账户** —— 在它存在之前，谁先访问谁就能注册成管理员。注意 Docker 发布的端口会绕过 ufw/firewalld。
 - **自动 HTTPS**：在 `.env` 里设置 `FEEDFORGE_DOMAIN`，然后 `docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d`，Caddy 会自动签发和续期证书。
 - **已有反向代理**：设置 `FEEDFORGE_BIND=127.0.0.1`，并把 `FEEDFORGE_BASE_URL` 设为公开地址。
 - **升级**：`git pull && docker compose up -d --build`。**备份**：`./data` 目录。
@@ -108,6 +111,7 @@ go build -o feedforge .
 ## 安全说明
 
 - 对回环、RFC1918、链路本地（云元数据）、CGNAT 等非公网地址的抓取在**建立连接时**就被拒绝，重定向和 DNS 重绑定也逃不掉。代理环境变量仅在 `FEEDFORGE_ALLOW_PRIVATE=true` 时生效。
+- 密码以 bcrypt 哈希存储；会话是 HttpOnly、`SameSite=Lax` 的 Cookie，令牌只存哈希；写操作的 JSON Content-Type 要求可拦截跨站表单 CSRF。
 - 抓取内容在 XML/JSON 输出中严格转义；非 `http`/`https` 的条目链接（如 `javascript:`）会被丢弃。
 
 ## 架构

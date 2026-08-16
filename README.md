@@ -13,7 +13,8 @@ Point it at a page, describe what to extract with `{%}` / `{*}` patterns, and ge
 - **Built-in recipes** for [Bytes.dev](https://bytes.dev/archives) and [OSSInsight](https://ossinsight.io/blog), each tested against a saved copy of the page.
 - **RSS 2.0 and JSON Feed 1.1** at stable URLs, with stable first-seen item dates.
 - **Charset-aware** — encodings auto-detected; GBK/Big5/Shift_JIS and friends can be forced per feed.
-- **Safe by default** — SSRF guard, size/time limits, escaped output, optional API token.
+- **Multi-user** — every account keeps its own feeds. The first account is the admin, who decides whether registration is open (closed by default).
+- **Safe by default** — SSRF guard, size/time limits, escaped output, session auth with CSRF protection.
 - **Single static binary**, one-command Docker deploy, `/demo` practice page.
 
 ## Quick start
@@ -31,7 +32,7 @@ go build -o feedforge .
 ./feedforge -addr :8080 -data ./data
 ```
 
-Pick a recipe (or write your own patterns), save, subscribe. Everything lives in `./data` — backing that up backs up everything (`tar czf backup.tar.gz data/`).
+The first visit asks you to create the **admin account**, and a fresh instance starts with the two recipe feeds (Bytes.dev, OSSInsight) already created for it. Everything lives in `./data` — backing that up backs up everything (`tar czf backup.tar.gz data/`).
 
 ## Patterns in a minute
 
@@ -75,15 +76,18 @@ These are the two feeds this instance is meant to provide. Both are tested again
 
 | Method & path | Description |
 |---|---|
+| `POST /api/auth/register`, `…/login`, `…/logout` | accounts & sessions (register: first user ever = admin, later users only while registration is enabled) |
+| `GET /api/auth/me` | current user |
+| `GET`, `PUT /api/admin/settings` | admin: toggle `registrationEnabled` |
 | `GET /api/recipes` | list built-in recipes |
-| `GET /api/feeds`, `POST /api/feeds` | list / create feeds |
-| `GET`, `PUT`, `DELETE /api/feeds/{id}` | read / update / delete one feed |
+| `GET /api/feeds`, `POST /api/feeds` | list / create your feeds |
+| `GET`, `PUT`, `DELETE /api/feeds/{id}` | read / update / delete one of your feeds |
 | `POST /api/feeds/{id}/refresh` | force refetch now |
 | `POST /api/preview` | dry-run patterns against a page |
 | `GET /feeds/{id}.xml`, `GET /feeds/{id}.json` | RSS 2.0 / JSON Feed output |
 | `GET /demo`, `GET /healthz` | practice page, health check |
 
-Mutating calls require `Content-Type: application/json`, plus `Authorization: Bearer <token>` when `FEEDFORGE_TOKEN` is set. Reads and feed outputs stay public.
+Everything under `/api` except `config`, `recipes` and `auth` requires a signed-in session (HttpOnly cookie); feeds are visible only to their owner. Mutating calls must send `Content-Type: application/json`. Feed outputs stay public — subscribers never sign in.
 
 ## Configuration
 
@@ -91,7 +95,6 @@ Mutating calls require `Content-Type: application/json`, plus `Authorization: Be
 |---|---|---|---|
 | `FEEDFORGE_ADDR` | `-addr` | `:8080` | listen address |
 | `FEEDFORGE_DATA` | `-data` | `./data` (`/data` in Docker) | data directory |
-| `FEEDFORGE_TOKEN` | `-token` | *(empty = open)* | API token for editing |
 | `FEEDFORGE_BASE_URL` | `-base-url` | *(derive from request)* | public origin in generated feed URLs |
 | `FEEDFORGE_ALLOW_PRIVATE` | `-allow-private` | `false` | allow fetching private/LAN addresses |
 | `FEEDFORGE_MAX_FETCH_MB` | `-max-fetch-mb` | `5` | max source page size |
@@ -100,7 +103,7 @@ Per feed: max items (1–500), refresh interval, item order reversal, encoding o
 
 ## Deployment
 
-- **Set `FEEDFORGE_TOKEN` on any public host** — without it, anyone who reaches the port can create feeds and make your server fetch URLs for them. Docker-published ports bypass ufw/firewalld.
+- **Create the admin account right after the first start** — until it exists, whoever visits first can claim it. Note that Docker-published ports bypass ufw/firewalld.
 - **HTTPS on your own domain**: set `FEEDFORGE_DOMAIN` in `.env`, then `docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d` — Caddy obtains and renews the certificate.
 - **Behind your own proxy**: `FEEDFORGE_BIND=127.0.0.1` and set `FEEDFORGE_BASE_URL` to the public origin.
 - **Upgrade**: `git pull && docker compose up -d --build`. **Backup**: the `./data` directory.
@@ -108,6 +111,7 @@ Per feed: max items (1–500), refresh interval, item order reversal, encoding o
 ## Security notes
 
 - Fetches to loopback, RFC1918, link-local (cloud metadata), CGNAT and other non-public addresses are refused **at dial time**, covering redirects and DNS rebinding. Proxy env vars are honoured only with `FEEDFORGE_ALLOW_PRIVATE=true`.
+- Passwords are stored as bcrypt hashes; sessions are HttpOnly `SameSite=Lax` cookies whose tokens are stored hashed, and the JSON content-type requirement on mutating calls blocks cross-site form CSRF.
 - Scraped content is escaped in XML/JSON output; item links that aren't `http`/`https` (such as `javascript:`) are dropped.
 
 ## Architecture

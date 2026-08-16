@@ -65,6 +65,7 @@ func serveFixture(t *testing.T, name string) (*httptest.Server, *httptest.Server
 func runRecipe(t *testing.T, r Recipe, fixture string) []previewItem {
 	t.Helper()
 	app, source := serveFixture(t, fixture)
+	c := adminClient(t, app) // preview requires a signed-in user
 
 	body := map[string]any{
 		"sourceUrl":       source.URL,
@@ -77,7 +78,7 @@ func runRecipe(t *testing.T, r Recipe, fixture string) []previewItem {
 		"maxItems":        r.Feed.MaxItems,
 		"reverse":         r.Feed.Reverse,
 	}
-	resp := postJSON(t, app.URL+"/api/preview", body, "")
+	resp := postJSON(t, c, app.URL+"/api/preview", body)
 	defer resp.Body.Close()
 
 	var pv previewResponse
@@ -168,7 +169,7 @@ func TestRecipesAreWellFormed(t *testing.T) {
 }
 
 func TestRecipesEndpoint(t *testing.T) {
-	app, _, _ := newTestServer(t, "")
+	app, _, _ := newTestServer(t)
 	resp, err := http.Get(app.URL + "/api/recipes")
 	if err != nil {
 		t.Fatal(err)

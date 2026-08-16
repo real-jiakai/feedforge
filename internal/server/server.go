@@ -4,7 +4,6 @@ package server
 import (
 	"context"
 	"crypto/sha1"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,7 +30,6 @@ import (
 type Config struct {
 	Store   *store.Store
 	Fetcher *fetch.Fetcher
-	Token   string // when non-empty, required (Bearer) for mutating API calls
 	BaseURL string // public origin, e.g. https://feeds.example.com; empty = derive from request
 	WebFS   fs.FS  // embedded UI files
 	Logger  *slog.Logger
@@ -98,13 +96,21 @@ func New(cfg Config) http.Handler {
 
 	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.HandleFunc("GET /api/recipes", s.handleRecipes)
-	mux.HandleFunc("GET /api/feeds", s.handleListFeeds)
-	mux.HandleFunc("GET /api/feeds/{id}", s.handleGetFeed)
-	mux.HandleFunc("POST /api/feeds", s.auth(s.handleCreateFeed))
-	mux.HandleFunc("PUT /api/feeds/{id}", s.auth(s.handleUpdateFeed))
-	mux.HandleFunc("DELETE /api/feeds/{id}", s.auth(s.handleDeleteFeed))
-	mux.HandleFunc("POST /api/feeds/{id}/refresh", s.auth(s.handleRefreshFeed))
-	mux.HandleFunc("POST /api/preview", s.auth(s.handlePreview))
+
+	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
+	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	mux.HandleFunc("GET /api/auth/me", s.handleMe)
+	mux.HandleFunc("GET /api/admin/settings", s.requireAdmin(s.handleGetAdminSettings))
+	mux.HandleFunc("PUT /api/admin/settings", s.requireAdmin(s.handlePutAdminSettings))
+
+	mux.HandleFunc("GET /api/feeds", s.requireUser(s.handleListFeeds))
+	mux.HandleFunc("GET /api/feeds/{id}", s.requireUser(s.handleGetFeed))
+	mux.HandleFunc("POST /api/feeds", s.requireUser(s.handleCreateFeed))
+	mux.HandleFunc("PUT /api/feeds/{id}", s.requireUser(s.handleUpdateFeed))
+	mux.HandleFunc("DELETE /api/feeds/{id}", s.requireUser(s.handleDeleteFeed))
+	mux.HandleFunc("POST /api/feeds/{id}/refresh", s.requireUser(s.handleRefreshFeed))
+	mux.HandleFunc("POST /api/preview", s.requireUser(s.handlePreview))
 
 	mux.HandleFunc("GET /feeds/{file}", s.handleFeedOutput)
 
@@ -136,19 +142,6 @@ func (s *Server) withRecovery(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
-}
-
-func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.Token != "" {
-			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) != 1 {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid API token"})
-				return
-			}
-		}
-		next(w, r)
-	}
 }
 
 // ---------- small helpers ----------
@@ -258,31 +251,43 @@ func (s *Server) baseURL(r *http.Request) string {
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"authRequired": s.cfg.Token != "",
-		"version":      "1.0.0",
+		"needsSetup":          s.cfg.Store.CountUsers() == 0,
+		"registrationEnabled": s.cfg.Store.RegistrationEnabled(),
+		"version":             "1.1.0",
 	})
 }
 
-func (s *Server) handleListFeeds(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.cfg.Store.List())
+// ownedFeed loads a feed if it belongs to the user; anything else is a 404
+// so feed IDs cannot be probed across accounts.
+func (s *Server) ownedFeed(w http.ResponseWriter, id string, u *store.User) (*store.Feed, bool) {
+	f, err := s.cfg.Store.Get(id)
+	if err != nil || f.OwnerID != u.ID {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feed not found"})
+		return nil, false
+	}
+	return f, true
 }
 
-func (s *Server) handleGetFeed(w http.ResponseWriter, r *http.Request) {
-	f, err := s.cfg.Store.Get(r.PathValue("id"))
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feed not found"})
+func (s *Server) handleListFeeds(w http.ResponseWriter, r *http.Request, u *store.User) {
+	writeJSON(w, http.StatusOK, s.cfg.Store.ListOwned(u.ID))
+}
+
+func (s *Server) handleGetFeed(w http.ResponseWriter, r *http.Request, u *store.User) {
+	f, ok := s.ownedFeed(w, r.PathValue("id"), u)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, f)
 }
 
-func (s *Server) handleCreateFeed(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCreateFeed(w http.ResponseWriter, r *http.Request, u *store.User) {
 	var f store.Feed
 	raw, ok := readJSONRaw(w, r, &f)
 	if !ok {
 		return
 	}
 	applySmartWhitespaceDefault(raw, &f)
+	f.OwnerID = u.ID
 	if err := validatePatterns(&f); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -294,7 +299,10 @@ func (s *Server) handleCreateFeed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, f)
 }
 
-func (s *Server) handleUpdateFeed(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleUpdateFeed(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if _, ok := s.ownedFeed(w, r.PathValue("id"), u); !ok {
+		return
+	}
 	var f store.Feed
 	raw, ok := readJSONRaw(w, r, &f)
 	if !ok {
@@ -302,6 +310,7 @@ func (s *Server) handleUpdateFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	applySmartWhitespaceDefault(raw, &f)
 	f.ID = r.PathValue("id")
+	f.OwnerID = u.ID // ownership is never taken over from the request body
 	if err := validatePatterns(&f); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -318,8 +327,11 @@ func (s *Server) handleUpdateFeed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, f)
 }
 
-func (s *Server) handleDeleteFeed(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleDeleteFeed(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id := r.PathValue("id")
+	if _, ok := s.ownedFeed(w, id, u); !ok {
+		return
+	}
 	if err := s.cfg.Store.Delete(id); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feed not found"})
 		return
@@ -328,16 +340,15 @@ func (s *Server) handleDeleteFeed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-func (s *Server) handleRefreshFeed(w http.ResponseWriter, r *http.Request) {
-	// Refresh takes no body, but without this check it would be the one
-	// mutating endpoint a cross-origin HTML form could still drive on a
-	// token-less instance, forcing source refetches past the TTL.
+func (s *Server) handleRefreshFeed(w http.ResponseWriter, r *http.Request, u *store.User) {
+	// Refresh takes no body, but the content-type check keeps it from
+	// being the one mutating endpoint a cross-origin HTML form could
+	// still drive, forcing source refetches past the TTL.
 	if !requireJSONContentType(w, r) {
 		return
 	}
 	id := r.PathValue("id")
-	if _, err := s.cfg.Store.Get(id); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feed not found"})
+	if _, ok := s.ownedFeed(w, id, u); !ok {
 		return
 	}
 	b, err := s.materialize(r.Context(), id, true)
@@ -710,7 +721,7 @@ type previewResponse struct {
 	Meta          *feed.Meta    `json:"meta,omitempty"`
 }
 
-func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, _ *store.User) {
 	var req previewRequest
 	raw, ok := readJSONRaw(w, r, &req)
 	if !ok {

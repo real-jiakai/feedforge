@@ -27,7 +27,8 @@ const DemoSourceURL = "feedforge://demo"
 
 // Feed is one feed definition — everything needed to regenerate its output.
 type Feed struct {
-	ID string `json:"id"`
+	ID      string `json:"id"`
+	OwnerID string `json:"ownerId,omitempty"` // account that owns this feed
 
 	// Output feed properties. May reference global captures ({%1}, …).
 	Title       string `json:"title"`
@@ -101,6 +102,11 @@ type Store struct {
 	mu    sync.RWMutex
 	feeds map[string]*Feed
 	seen  map[string]map[string]time.Time // feedID → guid → first seen
+
+	users        map[string]*User   // userID → user
+	userIDByName map[string]string  // lowercase username → userID
+	sessions     map[string]Session // token hash → session
+	settings     Settings
 }
 
 const seenCap = 1000 // per feed; oldest entries pruned beyond this
@@ -113,9 +119,15 @@ func Open(dir string) (*Store, error) {
 		}
 	}
 	s := &Store{
-		dir:   dir,
-		feeds: make(map[string]*Feed),
-		seen:  make(map[string]map[string]time.Time),
+		dir:          dir,
+		feeds:        make(map[string]*Feed),
+		seen:         make(map[string]map[string]time.Time),
+		users:        make(map[string]*User),
+		userIDByName: make(map[string]string),
+		sessions:     make(map[string]Session),
+	}
+	if err := s.loadAccounts(); err != nil {
+		return nil, fmt.Errorf("loading accounts: %w", err)
 	}
 	entries, err := os.ReadDir(filepath.Join(dir, "feeds"))
 	if err != nil {
@@ -142,17 +154,28 @@ func Open(dir string) (*Store, error) {
 	return s, nil
 }
 
-// List returns all feeds, newest first.
-func (s *Store) List() []*Feed {
+// ListOwned returns one user's feeds, newest first.
+func (s *Store) ListOwned(ownerID string) []*Feed {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*Feed, 0, len(s.feeds))
 	for _, f := range s.feeds {
+		if f.OwnerID != ownerID {
+			continue
+		}
 		cp := *f
 		out = append(out, &cp)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out
+}
+
+// HasFeeds reports whether any feed exists at all (used to decide whether a
+// fresh instance should be seeded with the built-in recipes).
+func (s *Store) HasFeeds() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.feeds) > 0
 }
 
 // Get returns a copy of one feed.
@@ -175,7 +198,7 @@ func (s *Store) Create(f *Feed) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id, err := s.newIDLocked()
+	id, err := newID(func(id string) bool { _, ok := s.feeds[id]; return ok })
 	if err != nil {
 		return err
 	}
@@ -352,7 +375,8 @@ func atomicWrite(path string, data []byte) error {
 
 const idAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
 
-func (s *Store) newIDLocked() (string, error) {
+// newID generates a random ID that the given predicate reports as free.
+func newID(taken func(string) bool) (string, error) {
 	for range 10 {
 		b := make([]byte, 8)
 		if _, err := rand.Read(b); err != nil {
@@ -362,11 +386,11 @@ func (s *Store) newIDLocked() (string, error) {
 			b[i] = idAlphabet[int(b[i])%len(idAlphabet)]
 		}
 		id := string(b)
-		if _, exists := s.feeds[id]; !exists {
+		if !taken(id) {
 			return id, nil
 		}
 	}
-	return "", errors.New("could not generate a unique feed ID")
+	return "", errors.New("could not generate a unique ID")
 }
 
 // ValidID reports whether id has the shape of a store-generated ID.

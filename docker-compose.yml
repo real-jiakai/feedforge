@@ -1,7 +1,10 @@
 # FeedForge — one-command deployment.
 #
-#   cp .env.example .env      # optional; do set FEEDFORGE_TOKEN if public
+#   cp .env.example .env      # optional
 #   docker compose up -d      # build + start on http://localhost:8080
+#
+# Visit the page right after the first start and create the admin account —
+# the first account registered becomes the administrator.
 #
 # Automatic HTTPS on your own domain (adds a Caddy front end):
 #   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
@@ -20,9 +23,6 @@ services:
     volumes:
       - ./data:/data
     environment:
-      # Protect feed creation/editing with a token (recommended when the
-      # server is reachable from the internet). Feed URLs stay public.
-      - FEEDFORGE_TOKEN=${FEEDFORGE_TOKEN:-}
       # Public origin behind a reverse proxy, e.g. https://feeds.example.com.
       # Set this in production so generated feed URLs don't depend on the
       # Host header of whoever asked first.

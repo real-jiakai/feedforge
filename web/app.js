@@ -6,7 +6,25 @@
 const I18N = {
   en: {
     tagline: "Turn any web page into an RSS feed",
-    apiToken: "API token",
+    username: "Username",
+    password: "Password",
+    signIn: "Sign in",
+    signOut: "Sign out",
+    register: "Register",
+    createAdmin: "Create admin account",
+    setupTitle: "Welcome to FeedForge",
+    setupHint: "This is a fresh instance. Create the first account — it becomes the administrator.",
+    signInTitle: "Sign in",
+    signInHint: "Your feeds are tied to your account.",
+    registerTitle: "Create an account",
+    registerHint: "Pick a username and a password of at least 8 characters.",
+    noAccount: "No account? Register",
+    haveAccount: "Have an account? Sign in",
+    adminTitle: "Administration",
+    allowReg: "Allow new users to register",
+    settingsSaved: "Setting saved",
+    sessionExpired: "Session expired — please sign in again.",
+    signedOut: "Signed out",
     yourFeeds: "Your feeds",
     newFeed: "+ New feed",
     newFeedTitle: "New feed",
@@ -65,9 +83,6 @@ const I18N = {
     pageLoaded: "loaded",
     chars: "characters",
     truncatedNote: "(view truncated)",
-    tokenPrompt: "Enter the API token for this FeedForge server:",
-    tokenSaved: "Token saved",
-    authError: "Authentication failed — check your API token (🔑 button, top right).",
     saveFirstHint: "Load a page and define an item pattern before saving.",
     saveFailed: "Save failed",
     noMatches: "No matches — adjust your item pattern.",
@@ -75,7 +90,25 @@ const I18N = {
   },
   zh: {
     tagline: "把任何网页变成 RSS 订阅源",
-    apiToken: "API 令牌",
+    username: "用户名",
+    password: "密码",
+    signIn: "登录",
+    signOut: "退出",
+    register: "注册",
+    createAdmin: "创建管理员账户",
+    setupTitle: "欢迎使用 FeedForge",
+    setupHint: "这是一个全新的实例。创建第一个账户 —— 它将成为管理员。",
+    signInTitle: "登录",
+    signInHint: "订阅源与你的账户绑定。",
+    registerTitle: "创建账户",
+    registerHint: "取一个用户名，密码至少 8 个字符。",
+    noAccount: "没有账户？注册",
+    haveAccount: "已有账户？登录",
+    adminTitle: "管理",
+    allowReg: "允许新用户注册",
+    settingsSaved: "设置已保存",
+    sessionExpired: "登录已过期，请重新登录。",
+    signedOut: "已退出登录",
     yourFeeds: "我的订阅源",
     newFeed: "+ 新建订阅源",
     newFeedTitle: "新建订阅源",
@@ -134,9 +167,6 @@ const I18N = {
     pageLoaded: "已加载",
     chars: "个字符",
     truncatedNote: "（源码视图已截断）",
-    tokenPrompt: "请输入此 FeedForge 服务器的 API 令牌：",
-    tokenSaved: "令牌已保存",
-    authError: "认证失败 — 请检查 API 令牌（右上角 🔑 按钮）。",
     saveFirstHint: "请先加载页面并填写条目搜索模式。",
     saveFailed: "保存失败",
     noMatches: "没有匹配 — 请调整条目搜索模式。",
@@ -226,19 +256,15 @@ function relTime(iso) {
 
 /* ---------------- API ---------------- */
 
-function getToken() { return localStorage.getItem("ff_token") || ""; }
-
 async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
-  const tok = getToken();
-  if (tok) headers["Authorization"] = "Bearer " + tok;
   const res = await fetch(path, { ...opts, headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined });
   let data = null;
   try { data = await res.json(); } catch (_) { /* non-JSON */ }
   if (res.status === 401) {
-    const err = new Error(t("authError"));
+    const err = new Error((data && data.error) || t("sessionExpired"));
     err.auth = true;
     throw err;
   }
@@ -250,16 +276,39 @@ async function api(path, opts = {}) {
 
 /* ---------------- state & routing ---------------- */
 
-let config = { authRequired: false };
+let config = { needsSetup: false, registrationEnabled: false };
+let me = null;             // signed-in user, or null
+let authMode = "login";    // "setup" | "login" | "register"
 let editingId = null;      // feed being edited, or null for a new feed
 let pendingPrefill = null; // form values to apply when the editor opens
 let previewSeq = 0;        // ignore out-of-order preview responses
 let debounceTimer = null;
 
+async function refreshConfig() {
+  try {
+    config = await api("/api/config");
+  } catch (_) { /* keep previous */ }
+}
+
+async function fetchMe() {
+  try {
+    return await api("/api/auth/me");
+  } catch (_) {
+    return null;
+  }
+}
+
 async function route() {
   const hash = location.hash || "#/";
+  show($("#view-auth"), false);
   show($("#view-list"), false);
   show($("#view-editor"), false);
+  show($("#userBox"), !!me);
+  if (!me) {
+    showAuth(config.needsSetup ? "setup" : "login");
+    return;
+  }
+  $("#userName").textContent = me.username;
   if (hash === "#/new") {
     editingId = null;
     openEditor(null);
@@ -270,13 +319,74 @@ async function route() {
       editingId = f.id;
       openEditor(f);
     } catch (e) {
-      toast(e.message);
+      handleAuthError(e);
       location.hash = "#/";
     }
   } else {
     editingId = null;
     renderList();
   }
+}
+
+/* ---------------- auth view ---------------- */
+
+function showAuth(mode) {
+  authMode = mode;
+  show($("#view-auth"));
+  show($("#authError"), false);
+  const title = $("#authTitle"), hint = $("#authHint"),
+    btn = $("#authBtn"), sw = $("#authSwitch");
+  if (mode === "setup") {
+    title.textContent = t("setupTitle");
+    hint.textContent = t("setupHint");
+    btn.textContent = t("createAdmin");
+    show(sw, false);
+  } else if (mode === "register") {
+    title.textContent = t("registerTitle");
+    hint.textContent = t("registerHint");
+    btn.textContent = t("register");
+    sw.textContent = t("haveAccount");
+    show(sw);
+  } else {
+    title.textContent = t("signInTitle");
+    hint.textContent = t("signInHint");
+    btn.textContent = t("signIn");
+    sw.textContent = t("noAccount");
+    show(sw, !!config.registrationEnabled);
+  }
+  $("#a-password").autocomplete = mode === "login" ? "current-password" : "new-password";
+  $("#a-username").focus();
+}
+
+async function submitAuth() {
+  const username = $("#a-username").value.trim();
+  const password = $("#a-password").value;
+  const path = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
+  const btn = $("#authBtn");
+  btn.disabled = true;
+  try {
+    me = await api(path, { method: "POST", body: { username, password } });
+    $("#a-password").value = "";
+    await refreshConfig();
+    if (location.hash && location.hash !== "#/") location.hash = "#/";
+    route();
+  } catch (e) {
+    $("#authError").textContent = e.message;
+    show($("#authError"));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function signOut() {
+  try {
+    await api("/api/auth/logout", { method: "POST", body: {} });
+  } catch (_) { /* session may already be gone */ }
+  me = null;
+  await refreshConfig();
+  toast(t("signedOut"));
+  location.hash = "#/";
+  route();
 }
 
 /* ---------------- feed list ---------------- */
@@ -287,7 +397,8 @@ async function renderList() {
   try {
     feeds = (await api("/api/feeds")) || [];
   } catch (e) {
-    toast(e.message);
+    handleAuthError(e);
+    return;
   }
   const wrap = $("#feedCards");
   wrap.textContent = "";
@@ -296,6 +407,17 @@ async function renderList() {
     wrap.appendChild(feedCard(f));
   }
   renderRecipes();
+  renderAdminPanel();
+}
+
+async function renderAdminPanel() {
+  const isAdmin = !!(me && me.isAdmin);
+  show($("#adminPanel"), isAdmin);
+  if (!isAdmin) return;
+  try {
+    const s = await api("/api/admin/settings");
+    $("#regToggle").checked = !!s.registrationEnabled;
+  } catch (_) { /* leave as-is */ }
 }
 
 function feedCard(f) {
@@ -379,7 +501,10 @@ function mkBtn(label, onClick) {
 
 function handleAuthError(e) {
   toast(e.message);
-  if (e.auth) askToken();
+  if (e.auth) {
+    me = null;
+    refreshConfig().then(route);
+  }
 }
 
 /* ---------------- editor ---------------- */
@@ -624,16 +749,6 @@ async function saveFeed() {
   }
 }
 
-/* ---------------- token ---------------- */
-
-function askToken() {
-  const cur = getToken();
-  const val = prompt(t("tokenPrompt"), cur);
-  if (val === null) return;
-  localStorage.setItem("ff_token", val.trim());
-  toast(t("tokenSaved"));
-}
-
 /* ---------------- recipes ---------------- */
 
 let recipes = [];
@@ -692,14 +807,38 @@ document.addEventListener("DOMContentLoaded", async () => {
     applyI18n();
     // Re-rendering the editor would call setForm() and wipe unsaved work,
     // so only the card list (whose labels are built in JS) is redrawn.
-    if ($("#view-editor").hidden) {
+    if (!$("#view-auth").hidden) {
+      showAuth(authMode);
+    } else if ($("#view-editor").hidden) {
       route();
     } else {
       $("#editorTitle").textContent = editingId ? t("editFeedTitle") : t("newFeedTitle");
       schedulePreview();
     }
   });
-  $("#tokenBtn").addEventListener("click", askToken);
+  $("#logoutBtn").addEventListener("click", signOut);
+  $("#authBtn").addEventListener("click", submitAuth);
+  $("#authSwitch").addEventListener("click", (e) => {
+    e.preventDefault();
+    showAuth(authMode === "login" ? "register" : "login");
+  });
+  for (const id of ["a-username", "a-password"]) {
+    document.getElementById(id).addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submitAuth();
+    });
+  }
+  $("#regToggle").addEventListener("change", async () => {
+    const box = $("#regToggle");
+    try {
+      const s = await api("/api/admin/settings",
+        { method: "PUT", body: { registrationEnabled: box.checked } });
+      config.registrationEnabled = !!s.registrationEnabled;
+      toast(t("settingsSaved"));
+    } catch (e) {
+      box.checked = !box.checked;
+      handleAuthError(e);
+    }
+  });
   $("#loadBtn").addEventListener("click", () => runPreview({ includePage: true, force: true }));
   $("#reloadBtn").addEventListener("click", () => runPreview({ includePage: true, force: true }));
   $("#saveBtn").addEventListener("click", saveFeed);
@@ -721,10 +860,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (e.key === "Enter") runPreview({ includePage: true, force: true });
   });
 
-  try {
-    config = await api("/api/config");
-  } catch (_) { /* defaults */ }
-  show($("#tokenBtn"), !!config.authRequired);
+  await refreshConfig();
+  me = await fetchMe();
 
   try {
     recipes = (await api("/api/recipes")) || [];

@@ -28,7 +28,6 @@ func main() {
 	var (
 		addr         = flag.String("addr", envStr("FEEDFORGE_ADDR", ":8080"), "listen address")
 		dataDir      = flag.String("data", envStr("FEEDFORGE_DATA", "./data"), "data directory")
-		token        = flag.String("token", envStr("FEEDFORGE_TOKEN", ""), "API token protecting mutating endpoints (empty = open)")
 		baseURL      = flag.String("base-url", envStr("FEEDFORGE_BASE_URL", ""), "public origin used in generated feed URLs, e.g. https://feeds.example.com (empty = derive from request)")
 		allowPrivate = flag.Bool("allow-private", envBool("FEEDFORGE_ALLOW_PRIVATE", false), "allow fetching from private/internal network addresses")
 		maxFetchMB   = flag.Int("max-fetch-mb", envInt("FEEDFORGE_MAX_FETCH_MB", 5), "max source page size in MB")
@@ -52,7 +51,6 @@ func main() {
 	handler := server.New(server.Config{
 		Store:   st,
 		Fetcher: fetch.New(*allowPrivate, int64(*maxFetchMB)*1024*1024, 20*time.Second),
-		Token:   *token,
 		BaseURL: *baseURL,
 		WebFS:   webFS,
 		Logger:  log,
@@ -66,7 +64,7 @@ func main() {
 
 	go func() {
 		log.Info("FeedForge listening", "addr", *addr, "data", *dataDir,
-			"authEnabled", *token != "", "allowPrivate", *allowPrivate)
+			"users", st.CountUsers(), "allowPrivate", *allowPrivate)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("server", "err", err)
 			os.Exit(1)

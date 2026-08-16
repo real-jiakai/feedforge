@@ -16,11 +16,29 @@
   </a>
   <span class="tagline" data-i18n="tagline">Turn any web page into an RSS feed</span>
   <div class="spacer"></div>
-  <button id="tokenBtn" class="btn ghost" hidden>🔑 <span data-i18n="apiToken">API token</span></button>
+  <span id="userBox" class="user-box" hidden>
+    <span id="userName" class="user-name"></span>
+    <button id="logoutBtn" class="btn ghost small" data-i18n="signOut">Sign out</button>
+  </span>
   <button id="langBtn" class="btn ghost" aria-label="Switch language">中文</button>
 </header>
 
 <main id="app">
+
+  <!-- ===================== Sign in / register ===================== -->
+  <section id="view-auth" hidden>
+    <div class="auth-card">
+      <h1 id="authTitle"></h1>
+      <p class="hint" id="authHint"></p>
+      <label data-i18n="username">Username</label>
+      <input id="a-username" type="text" autocomplete="username" spellcheck="false">
+      <label data-i18n="password">Password</label>
+      <input id="a-password" type="password" autocomplete="current-password">
+      <div id="authError" class="error-box" hidden></div>
+      <button id="authBtn" class="btn primary big"></button>
+      <p class="hint auth-switch"><a id="authSwitch" href="#" hidden></a></p>
+    </div>
+  </section>
 
   <!-- ===================== Feed list ===================== -->
   <section id="view-list" hidden>
@@ -42,6 +60,14 @@
       <h2 data-i18n="recipesTitle">Start from a recipe</h2>
       <p class="hint" data-i18n="recipesHint">Ready-made patterns for sites that have no feed of their own. Each one fills in the whole wizard, so you can see exactly how it works — and change it.</p>
       <div id="recipeCards" class="cards"></div>
+    </div>
+
+    <div id="adminPanel" class="admin-panel" hidden>
+      <h2 data-i18n="adminTitle">Administration</h2>
+      <label class="check">
+        <input id="regToggle" type="checkbox">
+        <span data-i18n="allowReg">Allow new users to register</span>
+      </label>
     </div>
   </section>
 
