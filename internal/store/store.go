@@ -49,7 +49,7 @@ type Feed struct {
 	ItemContent string `json:"itemContent"`
 
 	// Options.
-	MaxItems   int  `json:"maxItems"`   // default 25, capped at 100
+	MaxItems   int  `json:"maxItems"`   // default 25, capped at MaxItemsCap
 	TTLMinutes int  `json:"ttlMinutes"` // min minutes between refetches; default 30
 	Reverse    bool `json:"reverse"`    // reverse item order
 

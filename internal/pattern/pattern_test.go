@@ -225,8 +225,8 @@ func TestRender(t *testing.T) {
 	cases := []struct{ tmpl, want string }{
 		{"{%1}", "first"},
 		{"{%2} / {%1}", "second / first"},
-		{"{%3}", ""},        // out of range → empty
-		{"{%0}", ""},        // invalid index → empty
+		{"{%3}", ""}, // out of range → empty
+		{"{%0}", ""}, // invalid index → empty
 		{"literal", "literal"},
 		{"", ""},
 		{"a {%1} b {%2} c", "a first b second c"},
