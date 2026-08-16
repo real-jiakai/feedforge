@@ -14,9 +14,9 @@ Feed43 曾经让你指向任意网页、用简单的 `{%}` / `{*}` 搜索模式�
   `{%1}…{%n}` 输出模板。
 - **三步交互式向导** —— 加载页面、实时查看模式匹配结果、保存前预览订阅源。
   界面支持中文 / English。
-- **内置配方** —— 为真实网站写好并验证过的模式
-  （[OSSInsight](https://ossinsight.io/blog)、[Bytes.dev](https://bytes.dev/archives)、
-  Hacker News），一键填满整个向导，方便阅读和改造。每个配方都有测试保护。
+- **内置配方** —— 为 [OSSInsight](https://ossinsight.io/blog) 和
+  [Bytes.dev](https://bytes.dev/archives) 写好并验证过的模式，
+  一键填满整个向导，方便阅读和改造。每个配方都有测试保护。
 - **RSS 2.0 与 JSON Feed 1.1** 双格式输出，地址稳定。
 - **稳定的条目日期** —— FeedForge 记住每个条目第一次出现的时间并作为
   `pubDate`（Feed43 从来不给条目日期）。
@@ -123,17 +123,16 @@ go build -o feedforge .
 
 ## 内置配方
 
-FeedForge 自带四个现成的定义。在首页点选后会填满整个向导 ——
+FeedForge 自带两个现成的定义 —— 这正是本实例要提供的两个订阅源；
+其他站点已有别的开源项目覆盖，所以不再提供。在首页点选后会填满整个向导 ——
 它们是给你读、给你改的，不是黑盒。
 
 | 配方 | 来源 | 演示了什么 |
 |---|---|---|
-| FeedForge 演示页 | 内置 `/demo` | 最标准清晰的写法 |
-| Hacker News 首页 | news.ycombinator.com | 一行模式就够了 |
 | OSSInsight 博客 | ossinsight.io/blog | 跳过易变的 Tailwind 类名 |
 | Bytes.dev 归档 | bytes.dev/archives | 置顶条目结构与列表不同时怎么办 |
 
-OSSInsight 和 Bytes.dev 两个配方在测试中会针对保存下来的页面副本运行
+两个配方在测试中都会针对保存下来的页面副本运行
 （`internal/server/testdata/`）。网站结构一旦变化，是测试失败，
 而不是订阅源悄悄变空。
 

@@ -16,9 +16,10 @@ beyond the ones you set.
   + item search patterns, `{%1}…{%n}` output templates.
 - **Interactive 3-step wizard** — load a page, watch your patterns match
   live, preview the feed before saving. English / 中文 UI.
-- **Built-in recipes** — working patterns for real sites
-  ([OSSInsight](https://ossinsight.io/blog), [Bytes.dev](https://bytes.dev/archives),
-  Hacker News) that fill in the whole wizard so you can read and adapt them.
+- **Built-in recipes** — working patterns for
+  [OSSInsight](https://ossinsight.io/blog) and
+  [Bytes.dev](https://bytes.dev/archives) that fill in the whole wizard so
+  you can read and adapt them.
   Each is covered by a test against a saved copy of the page.
 - **RSS 2.0 and JSON Feed 1.1** output at stable URLs.
 - **Stable item dates** — FeedForge remembers when it first saw each item
@@ -135,20 +136,19 @@ which survives a restyle and matches every variant of the heading.
 
 ## Built-in recipes
 
-Four ready-made definitions ship with FeedForge. Pick one on the home page
-and the wizard fills in completely — they are meant to be read and modified,
-not treated as magic.
+Two ready-made definitions ship with FeedForge — the feeds this instance is
+meant to provide; sites already covered by other open-source projects are
+not offered. Pick one on the home page and the wizard fills in completely —
+they are meant to be read and modified, not treated as magic.
 
 | Recipe | Source | What it demonstrates |
 |---|---|---|
-| FeedForge demo page | built-in `/demo` | a clean, textbook pattern |
-| Hacker News front page | news.ycombinator.com | how little is needed — one line |
 | OSSInsight blog | ossinsight.io/blog | skipping volatile Tailwind classes |
 | Bytes.dev archives | bytes.dev/archives | a lead item whose markup differs from the list |
 
-The OSSInsight and Bytes.dev recipes are exercised in CI against saved
-copies of those pages (`internal/server/testdata/`), so if a site's markup
-drifts, a test fails instead of a feed quietly going empty.
+Both recipes are exercised in CI against saved copies of those pages
+(`internal/server/testdata/`), so if a site's markup drifts, a test fails
+instead of a feed quietly going empty.
 
 For reference, the Bytes.dev item pattern is:
 

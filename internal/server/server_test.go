@@ -13,6 +13,7 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+	"unicode/utf8"
 
 	"github.com/real-jiakai/feedforge/internal/fetch"
 	"github.com/real-jiakai/feedforge/internal/store"
@@ -572,18 +573,35 @@ func TestSmartWhitespaceDefaultsOnForAPIClients(t *testing.T) {
 
 func TestMutatingEndpointsRequireJSONContentType(t *testing.T) {
 	app, _, source := newTestServer(t, "")
+	f := createFeed(t, app, source, "")
+
 	raw, _ := json.Marshal(mkFeed(source.URL))
-	// A cross-origin HTML form can only send this content type; it must be
-	// refused so a token-less deployment isn't drivable from any web page.
-	req, _ := http.NewRequest(http.MethodPost, app.URL+"/api/feeds", strings.NewReader(string(raw)))
-	req.Header.Set("Content-Type", "text/plain")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnsupportedMediaType {
-		t.Errorf("got %d, want 415", resp.StatusCode)
+	// A cross-origin HTML form can only send these content types; they must
+	// be refused so a token-less deployment isn't drivable from any web
+	// page. /refresh matters as much as the CRUD calls: without the check
+	// any page could force refetches past the TTL.
+	for _, tc := range []struct {
+		path  string
+		body  string
+		ctype string
+	}{
+		{"/api/feeds", string(raw), "text/plain"},
+		{"/api/feeds", string(raw), "application/x-www-form-urlencoded"},
+		{"/api/feeds/" + f.ID + "/refresh", "", "text/plain"},
+		{"/api/feeds/" + f.ID + "/refresh", "", ""},
+	} {
+		req, _ := http.NewRequest(http.MethodPost, app.URL+tc.path, strings.NewReader(tc.body))
+		if tc.ctype != "" {
+			req.Header.Set("Content-Type", tc.ctype)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnsupportedMediaType {
+			t.Errorf("POST %s (%s): got %d, want 415", tc.path, tc.ctype, resp.StatusCode)
+		}
 	}
 }
 
@@ -619,6 +637,29 @@ func TestInvalidIDRejected(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want 404", path, resp.StatusCode)
+		}
+	}
+}
+
+func TestCutStringKeepsValidUTF8(t *testing.T) {
+	cases := []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"hello", 10, "hello"}, // shorter than max: untouched
+		{"hello", 4, "hell"},   // plain ASCII cut
+		{"aé-more", 3, "aé"},   // cut lands right after a complete rune
+		{"aé-more", 2, "a"},    // cut lands inside a rune
+		{"标题很长", 7, "标题"},      // CJK: 7 bytes = 2 runes + 1 partial byte
+	}
+	for _, c := range cases {
+		got, _ := cutString(c.in, c.max)
+		if got != c.want {
+			t.Errorf("cutString(%q, %d) = %q, want %q", c.in, c.max, got, c.want)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("cutString(%q, %d) produced invalid UTF-8: %q", c.in, c.max, got)
 		}
 	}
 }
