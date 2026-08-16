@@ -2,6 +2,7 @@
 /feedforge
 /feedforge.exe
 *.tmp
+/node_modules/
 
 # Local compose configuration — holds the API token. .env.example is tracked.
 /.env

@@ -1,5 +1,6 @@
 data/
 .git/
+node_modules/
 *.md
 docker-compose*.yml
 Caddyfile

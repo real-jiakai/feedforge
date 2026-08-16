@@ -123,8 +123,10 @@ internal/fetch/          加固的 HTTP 客户端（SSRF 防护、限额、编�
 internal/store/          JSON 文件存储 + 条目首见时间
 internal/feed/           RSS 2.0 / JSON Feed 1.1 渲染
 internal/server/         REST API、预览、TTL 缓存、演示页
-web/                     原生 JS 向导（内嵌，无构建步骤）
+web/                     向导 UI —— TypeScript 源码在 web/src，编译为普通 app.js
 ```
+
+前端是单个 TypeScript 文件（`web/src/app.ts`），编译成普通的 `web/app.js`（无模块、无打包器）。编译产物已提交，因此构建 Go 二进制或 Docker 镜像都不需要 Node 工具链 —— 只有修改前端时才需要 `npm install && npm run build`。
 
 ## 许可证
 

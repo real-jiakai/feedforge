@@ -1,0 +1,13 @@
+{
+  "name": "feedforge",
+  "private": true,
+  "description": "Build tooling for the FeedForge web UI. The compiled web/app.js is committed, so this is only needed when changing web/src/app.ts.",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

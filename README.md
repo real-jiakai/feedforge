@@ -123,8 +123,10 @@ internal/fetch/          hardened HTTP client (SSRF guard, limits, charsets)
 internal/store/          JSON-file persistence + first-seen item history
 internal/feed/           RSS 2.0 / JSON Feed 1.1 rendering
 internal/server/         REST API, preview, TTL cache, demo page
-web/                     vanilla JS wizard (embedded, no build step)
+web/                     wizard UI — TypeScript source in web/src, compiled to a plain app.js
 ```
+
+The UI is a single TypeScript file (`web/src/app.ts`) compiled to plain `web/app.js` (no modules, no bundler). The compiled file is committed, so building the Go binary or the Docker image needs no Node toolchain — run `npm install && npm run build` only when changing the UI.
 
 ## License
 

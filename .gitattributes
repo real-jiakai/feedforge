@@ -12,4 +12,9 @@ Dockerfile text eol=lf
 *.html    text eol=lf
 *.css     text eol=lf
 *.js      text eol=lf
+*.ts      text eol=lf
 *.md      text eol=lf
+
+# web/app.js is compiled from web/src/app.ts (npm run build); keep diffs
+# collapsed on GitHub and reviews focused on the TypeScript source.
+web/app.js linguist-generated=true

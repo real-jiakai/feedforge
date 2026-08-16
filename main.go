@@ -21,7 +21,11 @@ import (
 	"github.com/real-jiakai/feedforge/internal/store"
 )
 
-//go:embed web
+// Only the served files are embedded — not the TypeScript source in
+// web/src, which is compiled to web/app.js by `npm run build` and
+// committed, so building the binary needs no Node toolchain.
+//
+//go:embed web/index.html web/style.css web/app.js
 var webFiles embed.FS
 
 func main() {
